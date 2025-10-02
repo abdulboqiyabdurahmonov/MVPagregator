@@ -193,18 +193,15 @@ def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text=t(user_id, "start_btn"), callback_data="start_form")]]
     )
 
-
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    # Предложим выбрать язык
     await message.answer(t(message.from_user.id, "choose_lang"), reply_markup=lang_keyboard())
-
 
 @router.message(Command("lang"))
-async def cmd_lang(message: Message):
+async def cmd_lang(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(t(message.from_user.id, "choose_lang"), reply_markup=lang_keyboard())
-
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
