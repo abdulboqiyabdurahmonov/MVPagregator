@@ -9,7 +9,7 @@ BOT_TOKEN=...                           # Telegram bot token
 WEBHOOK_SECRET=supersecret              # secret token to verify webhook
 WEBHOOK_URL=https://your-service.onrender.com/webhook
 SHEET_ID=...                            # Google Sheet spreadsheet ID
-GOOGLE_SERVICE_ACCOUNT_BASE64=...       # base64-encoded service account JSON
+GOOGLE_SERVICE_ACCOUNT_JSON=...         # raw JSON of service account (one line)
 
 OPTIONAL:
 ADMINS=123456789,987654321              # comma-separated Telegram user IDs to receive alerts
@@ -18,7 +18,6 @@ LOCALE=ru                               # default locale text (ru/uz)
 
 import os
 import json
-import base64
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -151,9 +150,9 @@ class Form(StatesGroup):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        [InlineKeyboardButton(text=t("start_btn"), callback_data="start_form")]
-    ]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t("start_btn"), callback_data="start_form")]]
+    )
     await message.answer(t("hello"), reply_markup=kb)
 
 @router.callback_query(F.data == "start_form")
