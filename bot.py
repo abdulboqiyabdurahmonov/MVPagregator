@@ -20,22 +20,27 @@ LOCALE=ru                               # default locale text (ru/uz)
 import os
 import json
 import logging
+import asyncio
 import time
-from gspread.exceptions import APIError
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+from html import escape as html_escape
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, User
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, User
+)
 
 import gspread
-from datetime import datetime, timezone
+from gspread.exceptions import APIError
 
 # --------------- Config & Globals ---------------
 
@@ -73,12 +78,15 @@ TXT: Dict[str, Dict[str, str]] = {
         "thanks": "Спасибо! Ответы сохранены. 🎉\nЕсли готовы — напишите, созвонимся по деталям.",
         "err": "Ой! Что-то пошло не так. Попробуй ещё раз /start",
         "q1": "1/5. Сколько времени ушло на регистрацию и добавление первой машины?\n\n"
-              "Варианты: до 15 минут / 15–30 минут / более 30 минут",
+              "Можно нажать кнопку или написать свой вариант.",
+        "q1_opt1": "до 15 минут",
+        "q1_opt2": "15–30 минут",
+        "q1_opt3": "более 30 минут",
         "q2": "2/5. Насколько понятны статусы заявок и уведомления?\n\n"
-              "Оцени по шкале 1–10 (где 10 — идеально).",
+              "Оцени по шкале 1–10 (где 10 — идеально). Можно ввести число вручную.",
         "q3": "3/5. Что показалось неудобным? (свободный ответ)",
         "q4": "4/5. Каких функций не хватает в первую очередь? (например: онлайн-оплата, шаблоны цен, импорт)",
-        "q5": "5/5. Готовы ли рекомендовать коллегам? Укажи оценку 1–10.",
+        "q5": "5/5. Готовы ли рекомендовать коллегам? Укажи оценку 1–10.\nМожно нажать кнопку или ввести число.",
         "ask_company": "Укажи название компании (как у вас в Telegram/Instagram/юр. название)",
         "done": "Готово ✅",
         "back": "⬅️ Назад",
@@ -86,6 +94,8 @@ TXT: Dict[str, Dict[str, str]] = {
         "change_lang_hint": "Чтобы сменить язык позже, используй /lang",
         "lang_switched": "Язык переключён.",
         "form_started": "Погнали! Сначала уточним компанию:",
+        "diag_ok": "Диагностика OK: запись в таблицу работает.",
+        "diag_fail": "Диагностика: запись в таблицу не удалась.",
     },
     "uz": {
         "choose_lang": "Интерфейс тилини танланг:",
@@ -98,11 +108,14 @@ TXT: Dict[str, Dict[str, str]] = {
         "thanks": "Раҳмат! Жавоблар сақланди. 🎉",
         "err": "Уй! Нимадир хато. Қайта /start қилинг.",
         "q1": "1/5. Рўйхатдан ўтиш ва биринчи машинани қўшишга қанча вақт кетди?\n\n"
-              "Вариантлар: 15 дақиқагача / 15–30 дақиқа / 30 дақиқадан кўпроқ",
-        "q2": "2/5. Аризалар статуслари ва хабарномалар қай даражада тушунарли?\n1–10 баҳоланг.",
+              "Кнопкани босинг ёки ўз вариантини ёзинг.",
+        "q1_opt1": "15 дақиқагача",
+        "q1_opt2": "15–30 дақиқа",
+        "q1_opt3": "30 дақиқадан кўпроқ",
+        "q2": "2/5. Аризалар статуслари ва хабарномалар қай даражада тушунарли?\n1–10 баҳоланг (қўлдан ёзиш мумкин).",
         "q3": "3/5. Нима ноқулай туюлди? (эркин жавоб)",
         "q4": "4/5. Қайси функциялар етишмайди? (масалан: онлайн тўлов, нарх шаблонлари, импорт)",
-        "q5": "5/5. Ҳамкасбларга тавсия қиласизми? 1–10 баҳоланг.",
+        "q5": "5/5. Ҳамкасбларга тавсия қиласизми? 1–10 баҳоланг (кнопка ёки рақам).",
         "ask_company": "Компания номини киритинг (TG/Instagram/ёки юр. ном)",
         "done": "Тайёр ✅",
         "back": "⬅️ Орқага",
@@ -110,6 +123,8 @@ TXT: Dict[str, Dict[str, str]] = {
         "change_lang_hint": "Кейинроқ тилни /lang орқали ўзгартиришингиз мумкин.",
         "lang_switched": "Тил ўзгартирилди.",
         "form_started": "Бошладик! Аввало компания номини аниқлаймиз:",
+        "diag_ok": "Диагностика OK: жадвалга ёзиш ишлаяпти.",
+        "diag_fail": "Диагностика: жадвалга ёзиш муваффақиятсиз.",
     }
 }
 
@@ -137,8 +152,12 @@ WS_FEEDBACK = _get_or_create_ws(_SPREAD, "feedback", [
 ])
 WS_USERS = _get_or_create_ws(_SPREAD, "users", ["user_id", "lang", "updated_at"])
 
-def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
-    """Надёжный апенд: reopen + 3 retries + USER_ENTERED. Возвращает True/False."""
+# ---------- Async wrappers for blocking gspread ----------
+
+async def _io_to_sheets(fn, *args, timeout: float = 6.0, **kwargs):
+    return await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout=timeout)
+
+async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
     row = [
         datetime.now(timezone.utc).astimezone().isoformat(),
         user.id,
@@ -152,52 +171,59 @@ def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         data.get("q5", ""),
         json.dumps(data, ensure_ascii=False),
     ]
-
     for attempt in range(1, 4):
         try:
-            # Переоткрываем книгу/лист на каждую попытку — меньше шансов на “протухший” хэндл
-            spread = _open_spreadsheet()
+            spread = await _io_to_sheets(_open_spreadsheet)
             ws = _get_or_create_ws(spread, "feedback", [
                 "timestamp", "user_id", "username", "full_name", "company",
                 "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
                 "q4_missing_features", "q5_nps_recommend", "raw_json"
             ])
-            ws.append_row(row, value_input_option="USER_ENTERED")
+            await _io_to_sheets(ws.append_row, row, value_input_option="USER_ENTERED")
+            log.info("Sheets append OK (attempt %s)", attempt)
             return True
-        except APIError as e:
-            log.warning("Google Sheets APIError on append (attempt %s/3): %s", attempt, e)
+        except (APIError, asyncio.TimeoutError) as e:
+            log.warning("Sheets append API/Timeout (attempt %s/3): %s", attempt, e)
         except Exception as e:
-            log.warning("Append to Sheets failed (attempt %s/3): %s", attempt, e)
-        time.sleep(0.7 * attempt)  # простой прогрессивный бэкофф
+            log.warning("Sheets append error (attempt %s/3): %s", attempt, e)
+        await asyncio.sleep(0.7 * attempt)
     return False
 
 # ----------- Persistent language store ------------
 
 _lang_cache: Dict[int, str] = {}
 
-def set_user_lang(user_id: int, lang: str):
+async def set_user_lang(user_id: int, lang: str):
     lang = "uz" if lang == "uz" else "ru"
     _lang_cache[user_id] = lang
     try:
-        cell = WS_USERS.find(str(user_id))
+        spread = await _io_to_sheets(_open_spreadsheet)
+        ws = _get_or_create_ws(spread, "users", ["user_id", "lang", "updated_at"])
+        cell = await _io_to_sheets(ws.find, str(user_id))
         if cell:
-            WS_USERS.update_cell(cell.row, 2, lang)
-            WS_USERS.update_cell(cell.row, 3, datetime.now(timezone.utc).astimezone().isoformat())
+            await _io_to_sheets(ws.update_cell, cell.row, 2, lang)
+            await _io_to_sheets(ws.update_cell, cell.row, 3, datetime.now(timezone.utc).astimezone().isoformat())
             return
     except Exception:
         pass
-    # append new
     try:
-        WS_USERS.append_row([str(user_id), lang, datetime.now(timezone.utc).astimezone().isoformat()],
-                            value_input_option="RAW")
+        spread = await _io_to_sheets(_open_spreadsheet)
+        ws = _get_or_create_ws(spread, "users", ["user_id", "lang", "updated_at"])
+        await _io_to_sheets(
+            ws.append_row,
+            [str(user_id), lang, datetime.now(timezone.utc).astimezone().isoformat()],
+            value_input_option="USER_ENTERED",
+        )
     except Exception as e:
         log.warning("Failed to persist user lang: %s", e)
 
-def get_user_lang_persist(user_id: int) -> Optional[str]:
+async def get_user_lang_persist(user_id: int) -> Optional[str]:
     try:
-        cell = WS_USERS.find(str(user_id))
+        spread = await _io_to_sheets(_open_spreadsheet)
+        ws = _get_or_create_ws(spread, "users", ["user_id", "lang", "updated_at"])
+        cell = await _io_to_sheets(ws.find, str(user_id))
         if cell:
-            lang = WS_USERS.cell(cell.row, 2).value or ""
+            lang = (await _io_to_sheets(ws.cell, cell.row, 2)).value or ""
             lang = lang.strip().lower()
             if lang in ("ru", "uz"):
                 _lang_cache[user_id] = lang
@@ -211,16 +237,25 @@ def get_lang(user_id: Optional[int]) -> str:
         return "uz" if DEFAULT_LOCALE == "uz" else "ru"
     if user_id in _lang_cache:
         return _lang_cache[user_id]
-    # try persisted
-    lang = get_user_lang_persist(user_id)
-    if lang:
-        return lang
-    # fallback to env default
     return "uz" if DEFAULT_LOCALE == "uz" else "ru"
 
 def t(user_id: Optional[int], key: str) -> str:
     lang = get_lang(user_id)
     return TXT.get(lang, TXT["ru"]).get(key, key)
+
+# ---------- Safe sender (HTML → escaped HTML → plain) ----------
+
+async def send_text_safe(message: Message, user_id: Optional[int], key: str):
+    txt = t(user_id, key)
+    try:
+        return await message.answer(txt)
+    except TelegramBadRequest as e1:
+        log.warning("HTML send failed for key=%s: %s; fallback to escaped", key, e1)
+        try:
+            return await message.answer(html_escape(txt), parse_mode="HTML")
+        except Exception as e2:
+            log.warning("Escaped HTML send failed for key=%s: %s; fallback to plain", key, e2)
+            return await message.answer(txt, parse_mode=None)
 
 # --------------- Bot & FSM ---------------
 
@@ -234,6 +269,28 @@ class Form(StatesGroup):
     q4 = State()
     q5 = State()
 
+# ---------- Keyboards (selection + nav) ----------
+
+def nav_row(user_id: int) -> list[InlineKeyboardButton]:
+    return [
+        InlineKeyboardButton(text=t(user_id, "back"), callback_data="nav:back"),
+        InlineKeyboardButton(text=t(user_id, "skip"), callback_data="nav:skip"),
+    ]
+
+def kb_q1(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(user_id, "q1_opt1"), callback_data="ans:q1:opt1")],
+        [InlineKeyboardButton(text=t(user_id, "q1_opt2"), callback_data="ans:q1:opt2")],
+        [InlineKeyboardButton(text=t(user_id, "q1_opt3"), callback_data="ans:q1:opt3")],
+        nav_row(user_id),
+    ])
+
+def kb_scale(user_id: int, question_key: str) -> InlineKeyboardMarkup:
+    nums = [str(i) for i in range(1, 11)]
+    row1 = [InlineKeyboardButton(text=n, callback_data=f"ans:{question_key}:{n}") for n in nums[:5]]
+    row2 = [InlineKeyboardButton(text=n, callback_data=f"ans:{question_key}:{n}") for n in nums[5:]]
+    return InlineKeyboardMarkup(inline_keyboard=[row1, row2, nav_row(user_id)])
+
 def lang_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=TXT["ru"]["lang_ru"], callback_data="lang_ru"),
@@ -241,11 +298,37 @@ def lang_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
-    # Вшиваем текущий язык в callback_data для страховки
     lang = get_lang(user_id)
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=t(user_id, "start_btn"), callback_data=f"start_form:{lang}")]]
     )
+
+# ---------- Helpers for flow ----------
+
+async def ask_next(message: Message, user_id: int, next_state: State):
+    if next_state is Form.q1:
+        await send_text_safe(message, user_id, "q1")
+        await message.answer(".", reply_markup=kb_q1(user_id))
+    elif next_state is Form.q2:
+        await send_text_safe(message, user_id, "q2")
+        await message.answer(".", reply_markup=kb_scale(user_id, "q2"))
+    elif next_state is Form.q3:
+        await send_text_safe(message, user_id, "q3")
+    elif next_state is Form.q4:
+        await send_text_safe(message, user_id, "q4")
+    elif next_state is Form.q5:
+        await send_text_safe(message, user_id, "q5")
+        await message.answer(".", reply_markup=kb_scale(user_id, "q5"))
+
+def prev_state_of(state: State) -> Optional[State]:
+    order = [Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
+    try:
+        i = order.index(state)
+        return order[i-1] if i > 0 else None
+    except ValueError:
+        return None
+
+# ---------- /start, /lang, /cancel ----------
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -262,6 +345,8 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(t(message.from_user.id, "done"))
 
+# ---------- Language choice ----------
+
 @router.callback_query(F.data.in_(("lang_ru", "lang_uz")))
 async def cb_lang(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
@@ -277,7 +362,7 @@ async def cb_lang(call: CallbackQuery, state: FSMContext):
         pass
 
     chosen = "ru" if call.data.endswith("ru") else "uz"
-    set_user_lang(uid, chosen)
+    await set_user_lang(uid, chosen)
 
     welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
     kb = start_keyboard(uid)
@@ -295,58 +380,162 @@ async def cb_lang(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("start_form"))
 async def cb_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
-    # Подхватим язык из callback_data (start_form:uz|ru) — ещё один ремень безопасности
     try:
         parts = call.data.split(":", 1)
         if len(parts) == 2 and parts[1] in ("ru", "uz"):
-            set_user_lang(uid, parts[1])
+            await set_user_lang(uid, parts[1])
     except Exception:
         pass
 
     await state.clear()
     await state.set_state(Form.company)
-    await call.message.answer(t(uid, "form_started"))
-    await call.message.answer(t(uid, "ask_company"))
-    await call.answer()
+    await send_text_safe(call.message, uid, "form_started")
+    await send_text_safe(call.message, uid, "ask_company")
+    try:
+        await call.answer()
+    except Exception:
+        pass
+
+# ---------- Company (free text) ----------
 
 @router.message(Form.company)
 async def ask_company(message: Message, state: FSMContext):
     await state.update_data(company=(message.text or "").strip())
     await state.set_state(Form.q1)
-    await message.answer(t(message.from_user.id, "q1"))
+    await ask_next(message, message.from_user.id, Form.q1)
+
+# ---------- Answer via buttons (q1, q2, q5) + nav ----------
+
+def parse_answer(data: str) -> Tuple[str, Optional[str]]:
+    # "ans:q1:opt2" -> ("q1", "opt2") ; "nav:back" -> ("nav", "back")
+    if ":" not in data:
+        return data, None
+    parts = data.split(":", 2)
+    if len(parts) == 3:
+        return parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return data, None
+
+@router.callback_query(F.data.startswith(("ans:", "nav:")))
+async def cb_answers(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    cur_state = await state.get_state()
+
+    key, val = parse_answer(call.data)
+
+    # navigation
+    if key == "nav":
+        if val == "back":
+            if cur_state is None:
+                await call.answer()
+                return
+            prev = prev_state_of(StatesGroup.get_state(cur_state))
+            if prev:
+                await state.set_state(prev)
+                await ask_next(call.message, uid, prev)
+        elif val == "skip":
+            # move forward without saving current
+            next_map = {
+                Form.company.state: Form.q1,
+                Form.q1.state: Form.q2,
+                Form.q2.state: Form.q3,
+                Form.q3.state: Form.q4,
+                Form.q4.state: Form.q5,
+            }
+            nxt = next_map.get(cur_state)
+            if nxt:
+                await state.set_state(nxt)
+                await ask_next(call.message, uid, nxt)
+        try:
+            await call.answer()
+        except Exception:
+            pass
+        return
+
+    # answers
+    if key == "q1":
+        mapping = {"opt1": TXT[get_lang(uid)]["q1_opt1"],
+                   "opt2": TXT[get_lang(uid)]["q1_opt2"],
+                   "opt3": TXT[get_lang(uid)]["q1_opt3"]}
+        await state.update_data(q1=mapping.get(val, val))
+        await state.set_state(Form.q2)
+        await ask_next(call.message, uid, Form.q2)
+
+    elif key == "q2":
+        await state.update_data(q2=val)
+        await state.set_state(Form.q3)
+        await ask_next(call.message, uid, Form.q3)
+
+    elif key == "q5":
+        await state.update_data(q5=val)
+        data = await state.get_data()
+        ok = await append_feedback_row(call.from_user, data)
+        await state.clear()
+        if ok:
+            await call.message.answer(t(uid, "thanks"))
+        else:
+            await send_text_safe(call.message, uid, "err")
+        # notify admins
+        if ok:
+            for admin_id in ADMINS:
+                try:
+                    uname = f"@{call.from_user.username}" if call.from_user.username else str(call.from_user.id)
+                    await call.bot.send_message(
+                        admin_id,
+                        f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
+                    )
+                except Exception:
+                    pass
+    try:
+        await call.answer()
+    except Exception:
+        pass
+
+# ---------- Free-text handlers for each state ----------
 
 @router.message(Form.q1)
-async def ask_q1(message: Message, state: FSMContext):
+async def q1_text(message: Message, state: FSMContext):
     await state.update_data(q1=(message.text or "").strip())
     await state.set_state(Form.q2)
-    await message.answer(t(message.from_user.id, "q2"))
+    await ask_next(message, message.from_user.id, Form.q2)
 
 @router.message(Form.q2)
-async def ask_q2(message: Message, state: FSMContext):
-    await state.update_data(q2=(message.text or "").strip())
+async def q2_text(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    # принимаем всё, но если это число 1..10 — нормализуем
+    if text.isdigit() and 1 <= int(text) <= 10:
+        value = text
+    else:
+        value = text  # произвольный ответ
+    await state.update_data(q2=value)
     await state.set_state(Form.q3)
-    await message.answer(t(message.from_user.id, "q3"))
+    await ask_next(message, message.from_user.id, Form.q3)
 
 @router.message(Form.q3)
-async def ask_q3(message: Message, state: FSMContext):
+async def q3_text(message: Message, state: FSMContext):
     await state.update_data(q3=(message.text or "").strip())
     await state.set_state(Form.q4)
-    await message.answer(t(message.from_user.id, "q4"))
+    await ask_next(message, message.from_user.id, Form.q4)
 
 @router.message(Form.q4)
-async def ask_q4(message: Message, state: FSMContext):
+async def q4_text(message: Message, state: FSMContext):
     await state.update_data(q4=(message.text or "").strip())
     await state.set_state(Form.q5)
-    await message.answer(t(message.from_user.id, "q5"))
+    await ask_next(message, message.from_user.id, Form.q5)
 
 @router.message(Form.q5)
-async def finalize(message: Message, state: FSMContext):
-    await state.update_data(q5=(message.text or "").strip())
+async def q5_text(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text.isdigit() and 1 <= int(text) <= 10:
+        value = text
+    else:
+        value = text
+    await state.update_data(q5=value)
     data = await state.get_data()
-
     ok = False
     try:
-        ok = append_feedback_row(message.from_user, data)
+        ok = await append_feedback_row(message.from_user, data)
     except Exception as e:
         log.exception("append_feedback_row raised: %s", e)
 
@@ -354,8 +543,16 @@ async def finalize(message: Message, state: FSMContext):
 
     if ok:
         await message.answer(t(message.from_user.id, "thanks"))
+        for admin_id in ADMINS:
+            try:
+                uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
+                await message.bot.send_message(
+                    admin_id,
+                    f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
+                )
+            except Exception:
+                pass
     else:
-        # Сообщаем пользователю мягко, а админам — подробно
         await send_text_safe(message, message.from_user.id, "err")
         for admin_id in ADMINS:
             try:
@@ -364,22 +561,20 @@ async def finalize(message: Message, state: FSMContext):
                     "⚠️ Не удалось записать ответ в Google Sheets после 3 попыток.\n"
                     f"User: {message.from_user.id} @{message.from_user.username or '—'}\n"
                     f"Company: {data.get('company','')}\n"
-                    f"Payload: {json.dumps(data, ensure_ascii=False)[:2000]}"
+                    f"Payload: {json.dumps(data, ensure_ascii=False)[:1000]}"
                 )
             except Exception:
                 pass
-        return
 
-    # notify admins при успехе
-    for admin_id in ADMINS:
-        try:
-            uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-            await message.bot.send_message(
-                admin_id,
-                f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
-            )
-        except Exception:
-            pass
+# ---------- Optional: /diag — проверка записи в шит ----------
+
+@router.message(Command("diag"))
+async def cmd_diag(message: Message):
+    ok = await append_feedback_row(
+        message.from_user,
+        {"company": "diag", "q1": "diag", "q2": "1", "q3": "diag", "q4": "diag", "q5": "1"},
+    )
+    await message.answer(t(message.from_user.id, "diag_ok") if ok else t(message.from_user.id, "diag_fail"))
 
 # --------------- FastAPI + Aiogram Webhook ---------------
 
@@ -420,12 +615,10 @@ async def telegram_webhook(
 
 @app.get("/")
 async def root():
-    # удобный корневой пинг, чтобы Render/uptime-боты не сыпали 404
     return PlainTextResponse("TripleA Feedback Bot: alive")
 
 @app.get("/healthz")
 async def healthz():
-    # подробный хелсчек, если понадобится для мониторинга
     return JSONResponse({
         "ok": True,
         "service": "TripleA Feedback Bot",
@@ -433,3 +626,7 @@ async def healthz():
         "time": datetime.now(timezone.utc).astimezone().isoformat(),
         "env_locale": DEFAULT_LOCALE,
     })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("bot:app", host="0.0.0.0", port=int(os.getenv("PORT", "10000")), reload=False)
