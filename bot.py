@@ -41,7 +41,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "changeme")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SHEET_ID = os.getenv("SHEET_ID")
-GOOGLE_SERVICE_ACCOUNT_BASE64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_BASE64", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()]
 LOCALE = os.getenv("LOCALE", "ru")
 
@@ -105,8 +105,7 @@ def t(key: str) -> str:
 # --------------- Google Sheets client ---------------
 
 def make_sheets_client():
-    payload = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_BASE64).decode("utf-8")
-    info = json.loads(payload)
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     gc = gspread.service_account_from_dict(info)
     sh = gc.open_by_key(SHEET_ID)
     try:
