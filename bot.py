@@ -30,7 +30,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, User
 
 import gspread
 from datetime import datetime, timezone
@@ -121,7 +121,7 @@ def make_sheets_client():
 
 SHEET = make_sheets_client()
 
-def append_feedback_row(user: Message.from_user.__class__, data: Dict[str, Any]):
+def append_feedback_row(user: User, data: Dict[str, Any]):
     row = [
         datetime.now(timezone.utc).astimezone().isoformat(),
         user.id,
