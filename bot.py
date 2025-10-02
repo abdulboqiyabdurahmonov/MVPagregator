@@ -212,36 +212,38 @@ async def cmd_cancel(message: Message, state: FSMContext):
 @router.callback_query(F.data.in_(("lang_ru", "lang_uz")))
 async def cb_lang(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
-    # сначала "закрываем" колбэк, чтобы Telegram не крутил вечный спиннер
+
+    # 1) Cразу закрываем спиннер Telegram
     try:
-        await call.answer(TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"])
+        await call.answer(
+            TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"]
+        )
     except Exception:
         pass
 
-    # фикс: если человек был в анкете — обнулим стейт
+    # 2) Сбрасываем FSM, если юзер был внутри формы
     try:
         await state.clear()
     except Exception:
         pass
 
-    # сохраняем язык
+    # 3) Сохраняем язык
     _user_lang[uid] = "ru" if call.data.endswith("ru") else "uz"
 
-    # Пробуем аккуратно обновить интерфейс
-        try:
-            welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
-            kb = start_keyboard(uid)
-            # если есть исходное сообщение — редактируем, иначе шлём новое
-            if call.message:
-                try:
-                    await call.message.edit_text(welcome, reply_markup=kb)
-                except Exception:
-                    # не все сообщения редактируемы -> отправим новое
-                    await call.message.answer(welcome, reply_markup=kb)
-            else:
-                await call.bot.send_message(uid, welcome, reply_markup=kb)
-        except Exception as e:
-            log.error("Failed to send language-switched welcome: %s\n%s", e, traceback.format_exc())
+    # 4) Показываем приветствие + кнопку старта (редактируем, если можно)
+    welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
+    kb = start_keyboard(uid)
+
+    try:
+        if call.message:
+            try:
+                await call.message.edit_text(welcome, reply_markup=kb)
+            except Exception:
+                await call.message.answer(welcome, reply_markup=kb)
+        else:
+            await call.bot.send_message(uid, welcome, reply_markup=kb)
+    except Exception as e:
+        log.exception("Failed to send language-switched welcome: %s", e)
 
 @router.callback_query(F.data == "start_form")
 async def cb_start(call: CallbackQuery, state: FSMContext):
