@@ -380,21 +380,38 @@ async def cb_lang(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("start_form"))
 async def cb_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
-    try:
-        parts = call.data.split(":", 1)
-        if len(parts) == 2 and parts[1] in ("ru", "uz"):
-            await set_user_lang(uid, parts[1])
-    except Exception:
-        pass
 
-    await state.clear()
-    await state.set_state(Form.company)
-    await send_text_safe(call.message, uid, "form_started")
-    await send_text_safe(call.message, uid, "ask_company")
+    # 0) мгновенно закрываем спиннер, чтобы пользователь не видел "ожидание"
     try:
         await call.answer()
     except Exception:
         pass
+
+    # 1) НЕ блокируемся на шитах: сохраняем язык фоном, если он пришёл в callback_data
+    try:
+        parts = call.data.split(":", 1)
+        if len(parts) == 2 and parts[1] in ("ru", "uz"):
+            # fire-and-forget — без await
+            asyncio.create_task(set_user_lang(uid, parts[1]))
+    except Exception:
+        pass
+
+    # 2) безопасно двигаем FSM и шлём два сообщения
+    try:
+        await state.clear()
+        await state.set_state(Form.company)
+
+        # тут только отправка сообщений (никаких сетевых блокировок)
+        await send_text_safe(call.message, uid, "form_started")
+        await send_text_safe(call.message, uid, "ask_company")
+    except Exception as e:
+        log.exception("cb_start failed: %s", e)
+        # на крайний случай — через прямую отправку
+        try:
+            await call.bot.send_message(uid, t(uid, "form_started"))
+            await call.bot.send_message(uid, t(uid, "ask_company"))
+        except Exception:
+            pass
 
 # ---------- Company (free text) ----------
 
