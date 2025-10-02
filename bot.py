@@ -22,6 +22,8 @@ import json
 import logging
 import asyncio
 import time
+from collections import Counter
+import re
 from typing import Dict, Any, Optional, Tuple
 from html import escape as html_escape
 from datetime import datetime, timezone
@@ -96,6 +98,12 @@ TXT: Dict[str, Dict[str, str]] = {
         "form_started": "Погнали! Сначала уточним компанию:",
         "diag_ok": "Диагностика OK: запись в таблицу работает.",
         "diag_fail": "Диагностика: запись в таблицу не удалась.",
+        "no_data": "Пока нет данных для статистики.",
+        "stats_title": "Сводка по ответам",
+        "stats_n": "Всего ответов: {n}",
+        "stats_q1_dist": "Q1 — время на старт:\n{dist}",
+        "stats_avg": "Средние значения:\n• Q2 (понятность статусов): {avg_q2}\n• Q5 (NPS): {avg_q5}",
+        "stats_top_keywords": "Топ слов из свободных полей (Q3+Q4):\n{words}",
     },
     "uz": {
         "choose_lang": "Интерфейс тилини танланг:",
@@ -125,8 +133,31 @@ TXT: Dict[str, Dict[str, str]] = {
         "form_started": "Бошладик! Аввало компания номини аниқлаймиз:",
         "diag_ok": "Диагностика OK: жадвалга ёзиш ишлаяпти.",
         "diag_fail": "Диагностика: жадвалга ёзиш муваффақиятсиз.",
+        "no_data": "Ҳали статистика учун маълумот йўқ.",
+        "stats_title": "Жавоблар бўйича қисқа ҳисобот",
+        "stats_n": "Жами жавоблар: {n}",
+        "stats_q1_dist": "Q1 — стартга кетган вақт:\n{dist}",
+        "stats_avg": "Ўртача қийматлар:\n• Q2 (статус тушунарлилиги): {avg_q2}\n• Q5 (NPS): {avg_q5}",
+        "stats_top_keywords": "Эркин жавоблардан калит сўзлар (Q3+Q4):\n{words}",
     }
 }
+
+        # RU
+        "no_data": "Пока нет данных для статистики.",
+        "stats_title": "Сводка по ответам",
+        "stats_n": "Всего ответов: {n}",
+        "stats_q1_dist": "Q1 — время на старт:\n{dist}",
+        "stats_avg": "Средние значения:\n• Q2 (понятность статусов): {avg_q2}\n• Q5 (NPS): {avg_q5}",
+        "stats_top_keywords": "Топ слов из свободных полей (Q3+Q4):\n{words}",
+        
+        # UZ
+        "no_data": "Ҳали статистика учун маълумот йўқ.",
+        "stats_title": "Жавоблар бўйича қисқа ҳисобот",
+        "stats_n": "Жами жавоблар: {n}",
+        "stats_q1_dist": "Q1 — стартга кетган вақт:\n{dist}",
+        "stats_avg": "Ўртача қийматлар:\n• Q2 (статус тушунарлилиги): {avg_q2}\n• Q5 (NPS): {avg_q5}",
+        "stats_top_keywords": "Эркин жавоблардан калит сўзлар (Q3+Q4):\n{words}",
+
 
 # ----------- Google Sheets helpers (feedback + users) -----------
 
