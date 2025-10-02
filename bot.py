@@ -20,6 +20,8 @@ LOCALE=ru                               # default locale text (ru/uz)
 import os
 import json
 import logging
+import time
+from gspread.exceptions import APIError
 from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -135,7 +137,8 @@ WS_FEEDBACK = _get_or_create_ws(_SPREAD, "feedback", [
 ])
 WS_USERS = _get_or_create_ws(_SPREAD, "users", ["user_id", "lang", "updated_at"])
 
-def append_feedback_row(user: User, data: Dict[str, Any]):
+def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
+    """Надёжный апенд: reopen + 3 retries + USER_ENTERED. Возвращает True/False."""
     row = [
         datetime.now(timezone.utc).astimezone().isoformat(),
         user.id,
@@ -147,9 +150,26 @@ def append_feedback_row(user: User, data: Dict[str, Any]):
         data.get("q3", ""),
         data.get("q4", ""),
         data.get("q5", ""),
-        json.dumps(data, ensure_ascii=False)
+        json.dumps(data, ensure_ascii=False),
     ]
-    WS_FEEDBACK.append_row(row, value_input_option="RAW")
+
+    for attempt in range(1, 4):
+        try:
+            # Переоткрываем книгу/лист на каждую попытку — меньше шансов на “протухший” хэндл
+            spread = _open_spreadsheet()
+            ws = _get_or_create_ws(spread, "feedback", [
+                "timestamp", "user_id", "username", "full_name", "company",
+                "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
+                "q4_missing_features", "q5_nps_recommend", "raw_json"
+            ])
+            ws.append_row(row, value_input_option="USER_ENTERED")
+            return True
+        except APIError as e:
+            log.warning("Google Sheets APIError on append (attempt %s/3): %s", attempt, e)
+        except Exception as e:
+            log.warning("Append to Sheets failed (attempt %s/3): %s", attempt, e)
+        time.sleep(0.7 * attempt)  # простой прогрессивный бэкофф
+    return False
 
 # ----------- Persistent language store ------------
 
@@ -323,21 +343,40 @@ async def ask_q4(message: Message, state: FSMContext):
 async def finalize(message: Message, state: FSMContext):
     await state.update_data(q5=(message.text or "").strip())
     data = await state.get_data()
+
+    ok = False
     try:
-        append_feedback_row(message.from_user, data)
-    except Exception:
-        logging.exception("Failed to append to sheet")
-        await message.answer(t(message.from_user.id, "err"))
-        return
+        ok = append_feedback_row(message.from_user, data)
+    except Exception as e:
+        log.exception("append_feedback_row raised: %s", e)
+
     await state.clear()
-    await message.answer(t(message.from_user.id, "thanks"))
-    # notify admins
+
+    if ok:
+        await message.answer(t(message.from_user.id, "thanks"))
+    else:
+        # Сообщаем пользователю мягко, а админам — подробно
+        await send_text_safe(message, message.from_user.id, "err")
+        for admin_id in ADMINS:
+            try:
+                await message.bot.send_message(
+                    admin_id,
+                    "⚠️ Не удалось записать ответ в Google Sheets после 3 попыток.\n"
+                    f"User: {message.from_user.id} @{message.from_user.username or '—'}\n"
+                    f"Company: {data.get('company','')}\n"
+                    f"Payload: {json.dumps(data, ensure_ascii=False)[:2000]}"
+                )
+            except Exception:
+                pass
+        return
+
+    # notify admins при успехе
     for admin_id in ADMINS:
         try:
             uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
             await message.bot.send_message(
                 admin_id,
-                f"Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
+                f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
             )
         except Exception:
             pass
