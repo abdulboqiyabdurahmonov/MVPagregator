@@ -19,6 +19,7 @@ LOCALE=ru                               # default locale text (ru/uz)
 import os
 import json
 import logging
+import traceback
 from typing import Dict, Any, List, Optional
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -212,16 +213,38 @@ async def cmd_cancel(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.in_(("lang_ru", "lang_uz")))
-async def cb_lang(call: CallbackQuery):
+async def cb_lang(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
-    _user_lang[uid] = "ru" if call.data.endswith("ru") else "uz"
-    await call.answer(TXT[_user_lang[uid]]["lang_switched"], show_alert=False)
-    # После выбора языка — приветствие + кнопка "Начать опрос"
-    await call.message.answer(
-        t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint"),
-        reply_markup=start_keyboard(uid)
-    )
+    # сначала "закрываем" колбэк, чтобы Telegram не крутил вечный спиннер
+    try:
+        await call.answer(TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"])
+    except Exception:
+        pass
 
+    # фикс: если человек был в анкете — обнулим стейт
+    try:
+        await state.clear()
+    except Exception:
+        pass
+
+    # сохраняем язык
+    _user_lang[uid] = "ru" if call.data.endswith("ru") else "uz"
+
+    # Пробуем аккуратно обновить интерфейс
+        try:
+            welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
+            kb = start_keyboard(uid)
+            # если есть исходное сообщение — редактируем, иначе шлём новое
+            if call.message:
+                try:
+                    await call.message.edit_text(welcome, reply_markup=kb)
+                except Exception:
+                    # не все сообщения редактируемы -> отправим новое
+                    await call.message.answer(welcome, reply_markup=kb)
+            else:
+                await call.bot.send_message(uid, welcome, reply_markup=kb)
+        except Exception as e:
+            log.error("Failed to send language-switched welcome: %s\n%s", e, traceback.format_exc())
 
 @router.callback_query(F.data == "start_form")
 async def cb_start(call: CallbackQuery, state: FSMContext):
