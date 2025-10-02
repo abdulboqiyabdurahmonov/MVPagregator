@@ -379,10 +379,18 @@ async def telegram_webhook(
     await dp.feed_webhook_update(bot, update)
     return JSONResponse({"ok": True})
 
+@app.get("/")
+async def root():
+    # удобный корневой пинг, чтобы Render/uptime-боты не сыпали 404
+    return PlainTextResponse("TripleA Feedback Bot: alive")
+
 @app.get("/healthz")
 async def healthz():
-    return PlainTextResponse("ok")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("bot:app", host="0.0.0.0", port=int(os.getenv("PORT", "10000")), reload=False)
+    # подробный хелсчек, если понадобится для мониторинга
+    return JSONResponse({
+        "ok": True,
+        "service": "TripleA Feedback Bot",
+        "webhook": WEBHOOK_URL,
+        "time": datetime.now(timezone.utc).astimezone().isoformat(),
+        "env_locale": DEFAULT_LOCALE,
+    })
