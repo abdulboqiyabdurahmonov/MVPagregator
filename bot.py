@@ -29,7 +29,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, User
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, User
+)
 
 import gspread
 from datetime import datetime, timezone
@@ -42,7 +44,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()]
-LOCALE = os.getenv("LOCALE", "ru")
+DEFAULT_LOCALE = os.getenv("LOCALE", "ru").lower().strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
@@ -58,8 +60,11 @@ log = logging.getLogger("feedback-bot")
 
 # --------------- i18n ---------------
 
-TXT = {
+TXT: Dict[str, Dict[str, str]] = {
     "ru": {
+        "choose_lang": "Выбери язык интерфейса:",
+        "lang_ru": "🇷🇺 Русский",
+        "lang_uz": "🇺🇿 O‘zbekcha",
         "hello": "Привет! Это тестовый бот для партнёров автопроката.\n"
                  "Помоги нам улучшить агрегатор — ответь на 5 быстрых вопросов (2–3 минуты).",
         "start_btn": "Начать опрос",
@@ -77,9 +82,15 @@ TXT = {
         "done": "Готово ✅",
         "back": "⬅️ Назад",
         "skip": "Пропустить",
+        "change_lang_hint": "Чтобы сменить язык позже, используй /lang",
+        "lang_switched": "Язык переключён.",
+        "form_started": "Погнали! Сначала уточним компанию:",
     },
     "uz": {
-        "hello": "Салом! Бу тест бот — автопрокат ҳамкорларига мўлжалланган.\n"
+        "choose_lang": "Интерфейс тилини танланг:",
+        "lang_ru": "🇷🇺 Русча",
+        "lang_uz": "🇺🇿 O‘zbekcha",
+        "hello": "Салом! Бу тест бот — автопрокат ҳамкорлари учун.\n"
                  "Агрегаторни яхшилашга ёрдам беринг: 5 та қисқа савол (2–3 дақиқа).",
         "start_btn": "Сўровномани бошлаш",
         "cancel": "Бекор қилиш",
@@ -87,7 +98,7 @@ TXT = {
         "err": "Уй! Нимадир хато. Қайта /start қилинг.",
         "q1": "1/5. Рўйхатдан ўтиш ва биринчи машинани қўшишга қанча вақт кетди?\n\n"
               "Вариантлар: <15 дақиқа / 15–30 дақиқа / >30 дақиқа",
-        "q2": "2/5. Аризалар статусклари ва хабарномалар қанчалик тушунарли?\n1–10 баҳоланг.",
+        "q2": "2/5. Аризалар статуслари ва хабарномалар қай даражада тушунарли?\n1–10 баҳоланг.",
         "q3": "3/5. Нима ноқулай туюлди? (эркин жавоб)",
         "q4": "4/5. Қайси функциялар етишмайди? (масалан: онлайн тўлов, нарх шаблонлари, импорт)",
         "q5": "5/5. Ҳамкасбларга тавсия қиласизми? 1–10 баҳоланг.",
@@ -95,11 +106,27 @@ TXT = {
         "done": "Тайёр ✅",
         "back": "⬅️ Орқага",
         "skip": "Ўтказиб юбориш",
+        "change_lang_hint": "Кейинроқ тилни /lang орқали ўзгартиришингиз мумкин.",
+        "lang_switched": "Тил ўзгартирилди.",
+        "form_started": "Бошладик! Аввало компания номини аниқлаймиз:",
     }
 }
 
-def t(key: str) -> str:
-    return TXT.get(LOCALE, TXT["ru"]).get(key, key)
+# Per-user язык в памяти процесса (для прод — можно вынести в БД/кэш)
+_user_lang: Dict[int, str] = {}
+
+
+def get_lang(user_id: Optional[int]) -> str:
+    if user_id and user_id in _user_lang:
+        return _user_lang[user_id]
+    # Фолбэк — из ENV, иначе ru
+    return "uz" if DEFAULT_LOCALE == "uz" else "ru"
+
+
+def t(user_id: Optional[int], key: str) -> str:
+    lang = get_lang(user_id)
+    return TXT.get(lang, TXT["ru"]).get(key, key)
+
 
 # --------------- Google Sheets client ---------------
 
@@ -118,7 +145,9 @@ def make_sheets_client():
         ])
     return ws
 
+
 SHEET = make_sheets_client()
+
 
 def append_feedback_row(user: User, data: Dict[str, Any]):
     row = [
@@ -136,9 +165,11 @@ def append_feedback_row(user: User, data: Dict[str, Any]):
     ]
     SHEET.append_row(row, value_input_option="RAW")
 
+
 # --------------- Bot & FSM ---------------
 
 router = Router()
+
 
 class Form(StatesGroup):
     company = State()
@@ -148,102 +179,166 @@ class Form(StatesGroup):
     q4 = State()
     q5 = State()
 
+
+def lang_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=TXT["ru"]["lang_ru"], callback_data="lang_ru"),
+         InlineKeyboardButton(text=TXT["uz"]["lang_uz"], callback_data="lang_uz")]
+    ])
+
+
+def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t(user_id, "start_btn"), callback_data="start_form")]]
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t("start_btn"), callback_data="start_form")]]
+    await state.clear()
+    # Предложим выбрать язык
+    await message.answer(t(message.from_user.id, "choose_lang"), reply_markup=lang_keyboard())
+
+
+@router.message(Command("lang"))
+async def cmd_lang(message: Message):
+    await message.answer(t(message.from_user.id, "choose_lang"), reply_markup=lang_keyboard())
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(t(message.from_user.id, "done"))
+
+
+@router.callback_query(F.data.in_(("lang_ru", "lang_uz")))
+async def cb_lang(call: CallbackQuery):
+    uid = call.from_user.id
+    _user_lang[uid] = "ru" if call.data.endswith("ru") else "uz"
+    await call.answer(TXT[_user_lang[uid]]["lang_switched"], show_alert=False)
+    # После выбора языка — приветствие + кнопка "Начать опрос"
+    await call.message.answer(
+        t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint"),
+        reply_markup=start_keyboard(uid)
     )
-    await message.answer(t("hello"), reply_markup=kb)
+
 
 @router.callback_query(F.data == "start_form")
 async def cb_start(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(Form.company)
-    await call.message.answer(t("ask_company"))
+    await call.message.answer(t(call.from_user.id, "form_started"))
+    await call.message.answer(t(call.from_user.id, "ask_company"))
     await call.answer()
+
 
 @router.message(Form.company)
 async def ask_company(message: Message, state: FSMContext):
-    await state.update_data(company=message.text.strip())
+    await state.update_data(company=(message.text or "").strip())
     await state.set_state(Form.q1)
-    await message.answer(t("q1"))
+    await message.answer(t(message.from_user.id, "q1"))
+
 
 @router.message(Form.q1)
 async def ask_q1(message: Message, state: FSMContext):
-    await state.update_data(q1=message.text.strip())
+    await state.update_data(q1=(message.text or "").strip())
     await state.set_state(Form.q2)
-    await message.answer(t("q2"))
+    await message.answer(t(message.from_user.id, "q2"))
+
 
 @router.message(Form.q2)
 async def ask_q2(message: Message, state: FSMContext):
-    await state.update_data(q2=message.text.strip())
+    await state.update_data(q2=(message.text or "").strip())
     await state.set_state(Form.q3)
-    await message.answer(t("q3"))
+    await message.answer(t(message.from_user.id, "q3"))
+
 
 @router.message(Form.q3)
 async def ask_q3(message: Message, state: FSMContext):
-    await state.update_data(q3=message.text.strip())
+    await state.update_data(q3=(message.text or "").strip())
     await state.set_state(Form.q4)
-    await message.answer(t("q4"))
+    await message.answer(t(message.from_user.id, "q4"))
+
 
 @router.message(Form.q4)
 async def ask_q4(message: Message, state: FSMContext):
-    await state.update_data(q4=message.text.strip())
+    await state.update_data(q4=(message.text or "").strip())
     await state.set_state(Form.q5)
-    await message.answer(t("q5"))
+    await message.answer(t(message.from_user.id, "q5"))
+
 
 @router.message(Form.q5)
 async def finalize(message: Message, state: FSMContext):
-    await state.update_data(q5=message.text.strip())
+    await state.update_data(q5=(message.text or "").strip())
     data = await state.get_data()
     try:
         append_feedback_row(message.from_user, data)
-    except Exception as e:
+    except Exception:
         logging.exception("Failed to append to sheet")
-        await message.answer(t("err"))
+        await message.answer(t(message.from_user.id, "err"))
         return
     await state.clear()
-    await message.answer(t("thanks"))
+    await message.answer(t(message.from_user.id, "thanks"))
     # notify admins
     for admin_id in ADMINS:
         try:
+            uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
             await message.bot.send_message(
                 admin_id,
-                f"Новый фидбэк от @{message.from_user.username or message.from_user.id} — {data.get('company','')}"
+                f"Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
             )
         except Exception:
             pass
+
 
 # --------------- FastAPI + Aiogram Webhook ---------------
 
 app = FastAPI()
 
-bot = Bot(token=BOT_TOKEN)  # без parse_modedp = Dispatcher()
+# Инициируем бота с HTML parse_mode
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML"),
+)
+
+dp = Dispatcher()
 dp.include_router(router)
+
 
 @app.on_event("startup")
 async def on_startup():
-    # Set webhook
-    await bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
-    log.info("Webhook set")
+    # Вешаем вебхук
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=["message", "callback_query"]
+    )
+    log.info("Webhook set: %s", WEBHOOK_URL)
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
     await bot.delete_webhook()
+    log.info("Webhook deleted")
+
 
 @app.post("/webhook")
-async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Optional[str] = Header(None)):
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(None),
+):
     if x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return JSONResponse({"ok": True})
 
+
 @app.get("/healthz")
 async def healthz():
     return PlainTextResponse("ok")
 
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("bot:app", host="0.0.0.0", port=int(os.getenv("PORT", "10000")), reload=False)
-
