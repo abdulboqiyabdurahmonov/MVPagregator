@@ -218,8 +218,7 @@ async def finalize(message: Message, state: FSMContext):
 
 app = FastAPI()
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
+bot = Bot(token=BOT_TOKEN)  # без parse_modedp = Dispatcher()
 dp.include_router(router)
 
 @app.on_event("startup")
