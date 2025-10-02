@@ -49,8 +49,8 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
 if not SHEET_ID:
     raise RuntimeError("SHEET_ID is required")
-if not GOOGLE_SERVICE_ACCOUNT_BASE64:
-    raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_BASE64 is required (base64-encoded JSON key)")
+if not GOOGLE_SERVICE_ACCOUNT_JSON:
+    raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is required")
 if not WEBHOOK_URL:
     raise RuntimeError("WEBHOOK_URL is required")
 
