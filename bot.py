@@ -409,12 +409,17 @@ async def cb_lang(call: CallbackQuery, state: FSMContext):
         await call.answer(TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"])
     except Exception:
         pass
+
     try:
         await state.clear()
     except Exception:
         pass
 
     chosen = "ru" if call.data.endswith("ru") else "uz"
+
+    # ВАЖНО: моментально кладём в кеш, чтобы t(...) уже вернул нужный язык
+    _lang_cache[uid] = chosen
+    # А персистим в шиты фоном (как и было)
     asyncio.create_task(set_user_lang(uid, chosen))
 
     welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
@@ -438,10 +443,12 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    # захват языка из callback_data
     try:
         parts = call.data.split(":", 1)
         if len(parts) == 2 and parts[1] in ("ru", "uz"):
+            # моментально в кеш
+            _lang_cache[uid] = parts[1]
+            # и фоном в таблицу
             asyncio.create_task(set_user_lang(uid, parts[1]))
     except Exception:
         pass
@@ -450,7 +457,6 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(Form.name)
     await send_text_safe(call.message, uid, "form_started")
     await ask_next(call.message, uid, Form.name)
-
 
 # ---------- Free-text handlers (lead capture + questions) ----------
 
@@ -592,8 +598,16 @@ async def q3_text(message: Message, state: FSMContext):
 @router.message(Form.q4)
 async def q4_text(message: Message, state: FSMContext):
     await state.update_data(q4=(message.text or "").strip())
-    await state.set_state(Form.q5)
-    await ask_next(message, message.from_user.id, Form.q5)
+    try:
+        await state.set_state(Form.q5)
+        await ask_next(message, message.from_user.id, Form.q5)
+    except Exception as e:
+        log.exception("Failed to go Q4->Q5: %s", e)
+        # минимальный фолбэк — чтобы пользователь всё равно увидел вопрос
+        try:
+            await message.answer(t(message.from_user.id, "q5"), reply_markup=kb_scale(message.from_user.id, "q5"))
+        except Exception:
+            pass
 
 @router.message(Form.q5)
 async def q5_text(message: Message, state: FSMContext):
