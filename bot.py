@@ -42,6 +42,8 @@ from aiogram.types import (
 
 import gspread
 from gspread.exceptions import APIError
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram import types
 
 # --------------- Config & Globals ---------------
 
@@ -106,6 +108,9 @@ TXT: Dict[str, Dict[str, str]] = {
         "change_lang_hint": "Чтобы сменить язык позже, используй /lang",
         "lang_switched": "Язык переключён.",
         "form_started": "Погнали! Для начала уточним контактные данные:",
+        "ask_contact": "Оставьте контакт для связи (телефон или email). Можно в свободной форме или нажать кнопку ниже.",
+        "share_phone": "📱 Отправить мой номер",
+        "contact_saved": "Номер принят, спасибо!",
 
         # diag/stats
         "diag_ok": "Диагностика OK: запись в таблицу работает.",
@@ -160,6 +165,9 @@ TXT: Dict[str, Dict[str, str]] = {
         "stats_q1_dist": "Q1 — стартга кетган вақт:\n{dist}",
         "stats_avg": "Ўртача қийматлар:\n• Q2 (статус тушунарлилиги): {avg_q2}\n• Q5 (NPS): {avg_q5}",
         "stats_top_keywords": "Эркин жавоблардан калит сўзлар (Q3+Q4):\n{words}",
+        "ask_contact": "Боғланиш учун контакт қолдиринг (телефон ёки email). Қўлдан ёзинг ёки тугмани босинг.",
+        "share_phone": "📱 Рақамни юбориш",
+        "contact_saved": "Рақам қабул қилинди, раҳмат!",
     }
 }
 
@@ -182,12 +190,11 @@ def _get_or_create_ws(sh, title: str, headers: Optional[list] = None):
 # лист со всеми ответами
 _SPREAD = _open_spreadsheet()
 WS_FEEDBACK = _get_or_create_ws(_SPREAD, "feedback", [
-    "timestamp",
-    "user_id", "username", "full_name_tg",
-    "partner_name", "partner_contact", "company",
+    "timestamp", "user_id", "username", "full_name",
+    "partner_name", "partner_contact",
+    "company",
     "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
-    "q4_missing_features", "q5_nps_recommend",
-    "raw_json"
+    "q4_missing_features", "q5_nps_recommend", "raw_json"
 ])
 # лист с языками
 WS_USERS = _get_or_create_ws(_SPREAD, "users", ["user_id", "lang", "updated_at"])
@@ -203,11 +210,9 @@ async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         user.id,
         user.username or "",
         f"{user.first_name or ''} {user.last_name or ''}".strip(),
-
-        data.get("partner_name", ""),
-        data.get("partner_contact", ""),
+        data.get("name", ""),         # имя партнёра
+        data.get("contact", ""),      # телефон/email
         data.get("company", ""),
-
         data.get("q1", ""),
         data.get("q2", ""),
         data.get("q3", ""),
@@ -300,6 +305,8 @@ async def send_text_safe(message: Message, user_id: Optional[int], key: str, rep
 router = Router()
 
 class Form(StatesGroup):
+    name = State()      # имя партнёра
+    contact = State()   # телефон / email (кнопка + текст)
     partner_name = State()
     partner_contact = State()
     company = State()
@@ -343,13 +350,22 @@ def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text=t(user_id, "start_btn"), callback_data=f"start_form:{lang}")]]
     )
 
+def kb_share_phone(user_id: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=t(user_id, "share_phone"), request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        selective=True,
+        input_field_placeholder=t(user_id, "share_phone"),
+    )
+
 # ---------- Flow helpers ----------
 
 async def ask_next(message: Message, user_id: int, next_state: State):
     if next_state is Form.partner_name:
         await send_text_safe(message, user_id, "ask_name")
-    elif next_state is Form.partner_contact:
-        await send_text_safe(message, user_id, "ask_contact")
+    elif next_state is Form.contact:
+        await send_text_safe(message, user_id, "ask_contact", reply_markup=kb_share_phone(user_id))
     elif next_state is Form.company:
         await send_text_safe(message, user_id, "ask_company")
     elif next_state is Form.q1:
@@ -542,6 +558,24 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
                     )
                 except Exception:
                     pass
+
+# Пользователь нажал «Отправить мой номер»
+@router.message(Form.contact, F.contact)
+async def contact_via_button(message: Message, state: FSMContext):
+    phone = message.contact.phone_number
+    full_name = f"{message.contact.first_name or ''} {message.contact.last_name or ''}".strip()
+    await state.update_data(contact=phone, contact_name=full_name or (message.from_user.full_name or "").strip())
+    await message.answer(t(message.from_user.id, "contact_saved"), reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.company)
+    await ask_next(message, message.from_user.id, Form.company)
+
+# Пользователь ввёл контакт текстом
+@router.message(Form.contact)
+async def contact_via_text(message: Message, state: FSMContext):
+    await state.update_data(contact=(message.text or "").strip())
+    await message.answer(t(message.from_user.id, "contact_saved"), reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.company)
+    await ask_next(message, message.from_user.id, Form.company)
 
 # --- free text fallbacks for q1..q5 ---
 
