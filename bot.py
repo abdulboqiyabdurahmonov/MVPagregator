@@ -142,23 +142,6 @@ TXT: Dict[str, Dict[str, str]] = {
     }
 }
 
-        # RU
-        "no_data": "Пока нет данных для статистики.",
-        "stats_title": "Сводка по ответам",
-        "stats_n": "Всего ответов: {n}",
-        "stats_q1_dist": "Q1 — время на старт:\n{dist}",
-        "stats_avg": "Средние значения:\n• Q2 (понятность статусов): {avg_q2}\n• Q5 (NPS): {avg_q5}",
-        "stats_top_keywords": "Топ слов из свободных полей (Q3+Q4):\n{words}",
-        
-        # UZ
-        "no_data": "Ҳали статистика учун маълумот йўқ.",
-        "stats_title": "Жавоблар бўйича қисқа ҳисобот",
-        "stats_n": "Жами жавоблар: {n}",
-        "stats_q1_dist": "Q1 — стартга кетган вақт:\n{dist}",
-        "stats_avg": "Ўртача қийматлар:\n• Q2 (статус тушунарлилиги): {avg_q2}\n• Q5 (NPS): {avg_q5}",
-        "stats_top_keywords": "Эркин жавоблардан калит сўзлар (Q3+Q4):\n{words}",
-
-
 # ----------- Google Sheets helpers (feedback + users) -----------
 
 def _open_spreadsheet():
