@@ -694,7 +694,6 @@ dp.include_router(router)
 async def on_startup():
     await bot.set_webhook(
         url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
         allowed_updates=["message", "callback_query"]
     )
     log.info("Webhook set: %s", WEBHOOK_URL)
