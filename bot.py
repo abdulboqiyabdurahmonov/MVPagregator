@@ -270,17 +270,20 @@ def t(user_id: Optional[int], key: str) -> str:
 
 # ---------- Safe sender (HTML → escaped HTML → plain) ----------
 
-async def send_text_safe(message: Message, user_id: Optional[int], key: str):
+async def send_text_safe(message: Message, user_id: Optional[int], key: str, reply_markup=None):
     txt = t(user_id, key)
+    # На вопросах не нужен HTML — убираем парсер начисто
     try:
-        return await message.answer(txt)
-    except TelegramBadRequest as e1:
-        log.warning("HTML send failed for key=%s: %s; fallback to escaped", key, e1)
-        try:
-            return await message.answer(html_escape(txt), parse_mode="HTML")
-        except Exception as e2:
-            log.warning("Escaped HTML send failed for key=%s: %s; fallback to plain", key, e2)
-            return await message.answer(txt, parse_mode=None)
+        return await message.answer(
+            txt,
+            reply_markup=reply_markup,
+            parse_mode=None,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.warning("send_text_safe failed (%s): %s", key, e)
+        # Последний шанс: plain
+        return await message.answer(txt, reply_markup=reply_markup, parse_mode=None)
 
 # --------------- Bot & FSM ---------------
 
