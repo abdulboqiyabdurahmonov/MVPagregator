@@ -210,8 +210,8 @@ async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         user.id,
         user.username or "",
         f"{user.first_name or ''} {user.last_name or ''}".strip(),
-        data.get("name", ""),         # имя партнёра
-        data.get("contact", ""),      # телефон/email
+        data.get("name") or data.get("partner_name", ""),
+        data.get("contact") or data.get("partner_contact", ""),
         data.get("company", ""),
         data.get("q1", ""),
         data.get("q2", ""),
@@ -455,17 +455,11 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
 
 # ---------- Free-text handlers (lead capture + questions) ----------
 
-@router.message(Form.partner_name)
-async def h_partner_name(message: Message, state: FSMContext):
-    await state.update_data(partner_name=(message.text or "").strip())
-    await state.set_state(Form.partner_contact)
-    await ask_next(message, message.from_user.id, Form.partner_contact)
-
-@router.message(Form.partner_contact)
-async def h_partner_contact(message: Message, state: FSMContext):
-    await state.update_data(partner_contact=(message.text or "").strip())
-    await state.set_state(Form.company)
-    await ask_next(message, message.from_user.id, Form.company)
+@router.message(Form.name)
+async def h_name(message: Message, state: FSMContext):
+    await state.update_data(name=(message.text or "").strip())
+    await state.set_state(Form.contact)
+    await ask_next(message, message.from_user.id, Form.contact)
 
 @router.message(Form.company)
 async def h_company(message: Message, state: FSMContext):
