@@ -306,9 +306,7 @@ router = Router()
 
 class Form(StatesGroup):
     name = State()      # имя партнёра
-    contact = State()   # телефон / email (кнопка + текст)
-    partner_name = State()
-    partner_contact = State()
+    contact = State()   # телефон / email
     company = State()
     q1 = State()
     q2 = State()
@@ -362,7 +360,7 @@ def kb_share_phone(user_id: int) -> ReplyKeyboardMarkup:
 # ---------- Flow helpers ----------
 
 async def ask_next(message: Message, user_id: int, next_state: State):
-    if next_state is Form.partner_name:
+    if next_state is Form.name:
         await send_text_safe(message, user_id, "ask_name")
     elif next_state is Form.contact:
         await send_text_safe(message, user_id, "ask_contact", reply_markup=kb_share_phone(user_id))
@@ -380,7 +378,7 @@ async def ask_next(message: Message, user_id: int, next_state: State):
         await send_text_safe(message, user_id, "q5", reply_markup=kb_scale(user_id, "q5"))
 
 def prev_state_of(state: State) -> Optional[State]:
-    order = [Form.partner_name, Form.partner_contact, Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
+    order = [Form.name, Form.contact, Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
     try:
         i = order.index(state)
         return order[i-1] if i > 0 else None
