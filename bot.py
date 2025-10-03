@@ -12,7 +12,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON=...         # raw JSON of service account (one line)
 
 OPTIONAL
 --------
-WEBHOOK_SECRET=supersecret              # secret token to verify webhook (optional!)
+WEBHOOK_SECRET=                         # secret token to verify webhook (optional; can be empty)
 ADMINS=123456789,987654321              # comma-separated Telegram user IDs to receive alerts
 LOCALE=ru                               # default locale text (ru/uz)
 """
@@ -21,10 +21,10 @@ import os
 import json
 import logging
 import asyncio
-from collections import Counter
 import re
-from typing import Dict, Any, Optional, Tuple
+from collections import Counter
 from html import escape as html_escape
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -41,15 +41,16 @@ from aiogram.types import (
 )
 
 import gspread
-from gspread.exceptions import APIError, WorksheetNotFound
+from gspread.exceptions import APIError
 
 # --------------- Config & Globals ---------------
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # optional
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()]
 DEFAULT_LOCALE = os.getenv("LOCALE", "ru").lower().strip()
 
@@ -72,30 +73,41 @@ TXT: Dict[str, Dict[str, str]] = {
         "choose_lang": "Выбери язык интерфейса:",
         "lang_ru": "🇷🇺 Русский",
         "lang_uz": "🇺🇿 O‘zbekcha",
+
         "hello": "Привет! Это тестовый бот для партнёров автопроката.\n"
                  "Помоги нам улучшить агрегатор — ответь на 5 быстрых вопросов (2–3 минуты).",
         "start_btn": "Начать опрос",
         "cancel": "Отменить",
-        "thanks": "Спасибо! Ответы сохранены. 🎉\nЕсли готовы — напишите, созвонимся по деталям.",
-        "after_thanks": "Хочешь оставить контакты или написать своё мнение?",
-        "err": "Ой! Что-то пошло не так. Попробуй ещё раз /start",
+
+        # lead capture (имя+контакт+компания)
+        "ask_name": "Как к вам обращаться? (ФИО или имя)",
+        "ask_contact": "Оставьте контакт для связи (телефон или email). Можно в свободной форме.",
+        "ask_company": "Укажи название компании (как у вас в Telegram/Instagram/юр. название)",
+
+        # main questions
         "q1": "1/5. Сколько времени ушло на регистрацию и добавление первой машины?\n\n"
               "Можно нажать кнопку или написать свой вариант.",
         "q1_opt1": "до 15 минут",
         "q1_opt2": "15–30 минут",
         "q1_opt3": "более 30 минут",
+
         "q2": "2/5. Насколько понятны статусы заявок и уведомления?\n\n"
               "Оцени по шкале 1–10 (где 10 — идеально). Можно ввести число вручную.",
         "q3": "3/5. Что показалось неудобным? (свободный ответ)",
         "q4": "4/5. Каких функций не хватает в первую очередь? (например: онлайн-оплата, шаблоны цен, импорт)",
         "q5": "5/5. Готовы ли рекомендовать коллегам? Укажи оценку 1–10.\nМожно нажать кнопку или ввести число.",
-        "ask_company": "Укажи название компании (как у вас в Telegram/Instagram/юр. название)",
+
+        "thanks": "Спасибо! Ответы сохранены. 🎉\nЕсли готовы — напишите, созвонимся по деталям.",
+        "err": "Ой! Что-то пошло не так. Попробуй ещё раз /start",
+
         "done": "Готово ✅",
         "back": "⬅️ Назад",
         "skip": "Пропустить",
         "change_lang_hint": "Чтобы сменить язык позже, используй /lang",
         "lang_switched": "Язык переключён.",
-        "form_started": "Погнали! Сначала уточним компанию:",
+        "form_started": "Погнали! Для начала уточним контактные данные:",
+
+        # diag/stats
         "diag_ok": "Диагностика OK: запись в таблицу работает.",
         "diag_fail": "Диагностика: запись в таблицу не удалась.",
         "no_data": "Пока нет данных для статистики.",
@@ -104,44 +116,42 @@ TXT: Dict[str, Dict[str, str]] = {
         "stats_q1_dist": "Q1 — время на старт:\n{dist}",
         "stats_avg": "Средние значения:\n• Q2 (понятность статусов): {avg_q2}\n• Q5 (NPS): {avg_q5}",
         "stats_top_keywords": "Топ слов из свободных полей (Q3+Q4):\n{words}",
-        # post-ops
-        "btn_contacts": "Оставить контакты",
-        "btn_comment": "Написать мнение",
-        "ask_contact_name": "Как к вам обращаться?",
-        "ask_contact_phone": "Телефон или @telegram для связи:",
-        "ask_contact_email": "Email (по желанию). Если нет — отправьте «-».",
-        "contacts_saved": "Спасибо! Контакты записал. Свяжемся ✌️",
-        "ask_free_comment": "Оставьте ваш комментарий свободным текстом:",
-        "comment_saved": "Принял, спасибо! 📩 Передал менеджеру.",
-        "inbox_echo": "Принял, передал менеджеру 👌",
     },
     "uz": {
         "choose_lang": "Интерфейс тилини танланг:",
         "lang_ru": "🇷🇺 Русча",
         "lang_uz": "🇺🇿 O‘zbekcha",
+
         "hello": "Салом! Бу тест бот — автопрокат ҳамкорлари учун.\n"
                  "Агрегаторни яхшилашга ёрдам беринг: 5 та қисқа савол (2–3 дақиқа).",
         "start_btn": "Сўровномани бошлаш",
         "cancel": "Бекор қилиш",
-        "thanks": "Раҳмат! Жавоблар сақланди. 🎉",
-        "after_thanks": "Контакт қолдирамизми ёки фикр ёзамизми?",
-        "err": "Уй! Нимадир хато. Қайта /start қилинг.",
+
+        "ask_name": "Сизни қандай атайлик? (исм ёки ФИО)",
+        "ask_contact": "Алоқа учун телефон ёки email қолдиринг. Ихтиёрий форматда.",
+        "ask_company": "Компания номини киритинг (TG/Instagram/ёки юр. ном)",
+
         "q1": "1/5. Рўйхатдан ўтиш ва биринчи машинани қўшишга қанча вақт кетди?\n\n"
               "Кнопкани босинг ёки ўз вариантини ёзинг.",
         "q1_opt1": "15 дақиқагача",
         "q1_opt2": "15–30 дақиқа",
         "q1_opt3": "30 дақиқадан кўпроқ",
+
         "q2": "2/5. Аризалар статуслари ва хабарномалар қай даражада тушунарли?\n1–10 баҳоланг (қўлдан ёзиш мумкин).",
         "q3": "3/5. Нима ноқулай туюлди? (эркин жавоб)",
         "q4": "4/5. Қайси функциялар етишмайди? (масалан: онлайн тўлов, нарх шаблонлари, импорт)",
         "q5": "5/5. Ҳамкасбларга тавсия қиласизми? 1–10 баҳоланг (кнопка ёки рақам).",
-        "ask_company": "Компания номини киритинг (TG/Instagram/ёки юр. ном)",
+
+        "thanks": "Раҳмат! Жавоблар сақланди. 🎉",
+        "err": "Уй! Нимадир хато. Қайта /start қилинг.",
+
         "done": "Тайёр ✅",
         "back": "⬅️ Орқага",
         "skip": "Ўтказиб юбориш",
         "change_lang_hint": "Кейинроқ тилни /lang орқали ўзгартиришингиз мумкин.",
         "lang_switched": "Тил ўзгартирилди.",
-        "form_started": "Бошладик! Аввало компания номини аниқлаймиз:",
+        "form_started": "Бошлаймиз! Аввало контакт маълумотларини аниқлаймиз:",
+
         "diag_ok": "Диагностика OK: жадвалга ёзиш ишлаяпти.",
         "diag_fail": "Диагностика: жадвалга ёзиш муваффақиятсиз.",
         "no_data": "Ҳали статистика учун маълумот йўқ.",
@@ -150,30 +160,10 @@ TXT: Dict[str, Dict[str, str]] = {
         "stats_q1_dist": "Q1 — стартга кетган вақт:\n{dist}",
         "stats_avg": "Ўртача қийматлар:\n• Q2 (статус тушунарлилиги): {avg_q2}\n• Q5 (NPS): {avg_q5}",
         "stats_top_keywords": "Эркин жавоблардан калит сўзлар (Q3+Q4):\n{words}",
-        # post-ops
-        "btn_contacts": "Алоқа қолдириш",
-        "btn_comment": "Фикр ёзиш",
-        "ask_contact_name": "Қандай мурожаат қилсам бўлади?",
-        "ask_contact_phone": "Телефон ёки @telegram:",
-        "ask_contact_email": "Email (ихтиёрий). Йўқ бўлса — «-».",
-        "contacts_saved": "Раҳмат! Контактлар сақланди.",
-        "ask_free_comment": "Фикрингизни ёзиб қолдиринг:",
-        "comment_saved": "Қабул қилдим, раҳмат! 📩 Менежерга узатдим.",
-        "inbox_echo": "Қабул қилдим, менежерга узатдим 👌",
     }
 }
 
 # ----------- Google Sheets helpers (feedback + users) -----------
-
-# Полный заголовок feedback-листа (динамически используем мапу имён -> колонка)
-FEEDBACK_HEADERS = [
-    "timestamp", "user_id", "username", "full_name", "company",
-    "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
-    "q4_missing_features", "q5_nps_recommend",
-    "contact_name", "contact_phone", "contact_tg", "contact_email",
-    "free_comment",
-    "raw_json",
-]
 
 def _open_spreadsheet():
     info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
@@ -183,48 +173,59 @@ def _open_spreadsheet():
 def _get_or_create_ws(sh, title: str, headers: Optional[list] = None):
     try:
         ws = sh.worksheet(title)
-    except WorksheetNotFound:
-        ws = sh.add_worksheet(title=title, rows=3000, cols=30)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=2000, cols=30)
         if headers:
             ws.append_row(headers, value_input_option="RAW")
     return ws
 
-async def _io_to_sheets(fn, *args, timeout: float = 8.0, **kwargs):
+# лист со всеми ответами
+_SPREAD = _open_spreadsheet()
+WS_FEEDBACK = _get_or_create_ws(_SPREAD, "feedback", [
+    "timestamp",
+    "user_id", "username", "full_name_tg",
+    "partner_name", "partner_contact", "company",
+    "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
+    "q4_missing_features", "q5_nps_recommend",
+    "raw_json"
+])
+# лист с языками
+WS_USERS = _get_or_create_ws(_SPREAD, "users", ["user_id", "lang", "updated_at"])
+
+# ---------- Async wrappers for blocking gspread ----------
+
+async def _io_to_sheets(fn, *args, timeout: float = 6.0, **kwargs):
     return await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout=timeout)
 
-async def _get_feedback_ws_and_map():
-    spread = await _io_to_sheets(_open_spreadsheet)
-    ws = _get_or_create_ws(spread, "feedback", FEEDBACK_HEADERS)
-    header_row = await _io_to_sheets(ws.row_values, 1)
-    # если лист пустой — допишем заголовок
-    if not header_row:
-        await _io_to_sheets(ws.append_row, FEEDBACK_HEADERS, value_input_option="RAW")
-        header_row = FEEDBACK_HEADERS[:]
-    name_to_col = {name: i+1 for i, name in enumerate(header_row)}
-    return ws, name_to_col
-
 async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
-    ws, name_to_col = await _get_feedback_ws_and_map()
-    row = [""] * len(name_to_col)
-    def setv(name, val):
-        idx = name_to_col.get(name)
-        if idx:
-            row[idx-1] = val
+    row = [
+        datetime.now(timezone.utc).astimezone().isoformat(),
+        user.id,
+        user.username or "",
+        f"{user.first_name or ''} {user.last_name or ''}".strip(),
 
-    setv("timestamp", datetime.now(timezone.utc).astimezone().isoformat())
-    setv("user_id", user.id)
-    setv("username", user.username or "")
-    setv("full_name", f"{user.first_name or ''} {user.last_name or ''}".strip())
-    setv("company", data.get("company", ""))
-    setv("q1_time_to_setup", data.get("q1", ""))
-    setv("q2_statuses_score", data.get("q2", ""))
-    setv("q3_what_inconvenient", data.get("q3", ""))
-    setv("q4_missing_features", data.get("q4", ""))
-    setv("q5_nps_recommend", data.get("q5", ""))
-    setv("raw_json", json.dumps(data, ensure_ascii=False))
+        data.get("partner_name", ""),
+        data.get("partner_contact", ""),
+        data.get("company", ""),
 
+        data.get("q1", ""),
+        data.get("q2", ""),
+        data.get("q3", ""),
+        data.get("q4", ""),
+        data.get("q5", ""),
+        json.dumps(data, ensure_ascii=False),
+    ]
     for attempt in range(1, 4):
         try:
+            spread = await _io_to_sheets(_open_spreadsheet)
+            ws = _get_or_create_ws(spread, "feedback", [
+                "timestamp",
+                "user_id", "username", "full_name_tg",
+                "partner_name", "partner_contact", "company",
+                "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
+                "q4_missing_features", "q5_nps_recommend",
+                "raw_json"
+            ])
             await _io_to_sheets(ws.append_row, row, value_input_option="USER_ENTERED")
             log.info("Sheets append OK (attempt %s)", attempt)
             return True
@@ -235,52 +236,9 @@ async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         await asyncio.sleep(0.7 * attempt)
     return False
 
-async def _find_last_row_for_user(user_id: int) -> Optional[int]:
-    ws, name_to_col = await _get_feedback_ws_and_map()
-    try:
-        cells = await _io_to_sheets(ws.findall, str(user_id))
-    except Exception:
-        cells = []
-    if not cells:
-        return None
-    # отфильтруем только по колонке user_id
-    user_col = name_to_col.get("user_id", 2)
-    same_col = [c for c in cells if c.col == user_col]
-    target = same_col or cells
-    return max(c.row for c in target)
-
-async def upsert_contacts_for_user(user: User, data: Dict[str, Any]):
-    ws, name_to_col = await _get_feedback_ws_and_map()
-    row = await _find_last_row_for_user(user.id)
-    if row:
-        for key in ("contact_name", "contact_phone", "contact_tg", "contact_email"):
-            val = data.get(key, "")
-            col = name_to_col.get(key)
-            if col:
-                await _io_to_sheets(ws.update_cell, row, col, val)
-    else:
-        # добавим как отдельную строку с пустыми q1..q5
-        payload = {
-            "contact_name": data.get("contact_name",""),
-            "contact_phone": data.get("contact_phone",""),
-            "contact_tg": data.get("contact_tg",""),
-            "contact_email": data.get("contact_email",""),
-        }
-        await append_feedback_row(user, payload)
-
-async def upsert_comment_for_user(user: User, data: Dict[str, Any]):
-    ws, name_to_col = await _get_feedback_ws_and_map()
-    row = await _find_last_row_for_user(user.id)
-    if row:
-        col = name_to_col.get("free_comment")
-        if col:
-            await _io_to_sheets(ws.update_cell, row, col, data.get("free_comment",""))
-    else:
-        await append_feedback_row(user, {"free_comment": data.get("free_comment","")})
-
 async def fetch_feedback_records() -> list[dict]:
     spread = await _io_to_sheets(_open_spreadsheet)
-    ws = _get_or_create_ws(spread, "feedback", FEEDBACK_HEADERS)
+    ws = _get_or_create_ws(spread, "feedback")
     return await _io_to_sheets(ws.get_all_records, head=1, default_blank="")
 
 # ----------- Persistent language store ------------
@@ -322,7 +280,7 @@ def t(user_id: Optional[int], key: str) -> str:
     lang = get_lang(user_id)
     return TXT.get(lang, TXT["ru"]).get(key, key)
 
-# ---------- Safe sender (plain text) ----------
+# ---------- Safe sender (no HTML parse on questions) ----------
 
 async def send_text_safe(message: Message, user_id: Optional[int], key: str, reply_markup=None):
     txt = t(user_id, key)
@@ -342,16 +300,14 @@ async def send_text_safe(message: Message, user_id: Optional[int], key: str, rep
 router = Router()
 
 class Form(StatesGroup):
+    partner_name = State()
+    partner_contact = State()
     company = State()
     q1 = State()
     q2 = State()
     q3 = State()
     q4 = State()
     q5 = State()
-    contact_name = State()
-    contact_phone = State()
-    contact_email = State()
-    free_comment = State()
 
 # ---------- Keyboards ----------
 
@@ -375,12 +331,6 @@ def kb_scale(user_id: int, question_key: str) -> InlineKeyboardMarkup:
     row2 = [InlineKeyboardButton(text=n, callback_data=f"ans:{question_key}:{n}") for n in nums[5:]]
     return InlineKeyboardMarkup(inline_keyboard=[row1, row2, nav_row(user_id)])
 
-def kb_after_survey(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(user_id, "btn_contacts"), callback_data="post:contact")],
-        [InlineKeyboardButton(text=t(user_id, "btn_comment"),  callback_data="post:comment")],
-    ])
-
 def lang_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=TXT["ru"]["lang_ru"], callback_data="lang_ru"),
@@ -393,10 +343,16 @@ def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text=t(user_id, "start_btn"), callback_data=f"start_form:{lang}")]]
     )
 
-# ---------- Helpers for flow ----------
+# ---------- Flow helpers ----------
 
 async def ask_next(message: Message, user_id: int, next_state: State):
-    if next_state is Form.q1:
+    if next_state is Form.partner_name:
+        await send_text_safe(message, user_id, "ask_name")
+    elif next_state is Form.partner_contact:
+        await send_text_safe(message, user_id, "ask_contact")
+    elif next_state is Form.company:
+        await send_text_safe(message, user_id, "ask_company")
+    elif next_state is Form.q1:
         await send_text_safe(message, user_id, "q1", reply_markup=kb_q1(user_id))
     elif next_state is Form.q2:
         await send_text_safe(message, user_id, "q2", reply_markup=kb_scale(user_id, "q2"))
@@ -408,7 +364,7 @@ async def ask_next(message: Message, user_id: int, next_state: State):
         await send_text_safe(message, user_id, "q5", reply_markup=kb_scale(user_id, "q5"))
 
 def prev_state_of(state: State) -> Optional[State]:
-    order = [Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
+    order = [Form.partner_name, Form.partner_contact, Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
     try:
         i = order.index(state)
         return order[i-1] if i > 0 else None
@@ -438,9 +394,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
 async def cb_lang(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     try:
-        await call.answer(
-            TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"]
-        )
+        await call.answer(TXT["ru"]["lang_switched"] if call.data.endswith("ru") else TXT["uz"]["lang_switched"])
     except Exception:
         pass
     try:
@@ -449,7 +403,7 @@ async def cb_lang(call: CallbackQuery, state: FSMContext):
         pass
 
     chosen = "ru" if call.data.endswith("ru") else "uz"
-    await set_user_lang(uid, chosen)
+    asyncio.create_task(set_user_lang(uid, chosen))
 
     welcome = t(uid, "hello") + "\n\n" + t(uid, "change_lang_hint")
     kb = start_keyboard(uid)
@@ -472,6 +426,7 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
+    # захват языка из callback_data
     try:
         parts = call.data.split(":", 1)
         if len(parts) == 2 and parts[1] in ("ru", "uz"):
@@ -479,28 +434,32 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    try:
-        await state.clear()
-        await state.set_state(Form.company)
-        await send_text_safe(call.message, uid, "form_started")
-        await send_text_safe(call.message, uid, "ask_company")
-    except Exception as e:
-        log.exception("cb_start failed: %s", e)
-        try:
-            await call.bot.send_message(uid, t(uid, "form_started"))
-            await call.bot.send_message(uid, t(uid, "ask_company"))
-        except Exception:
-            pass
+    await state.clear()
+    await state.set_state(Form.partner_name)
+    await send_text_safe(call.message, uid, "form_started")
+    await ask_next(call.message, uid, Form.partner_name)
 
-# ---------- Company (free text) ----------
+# ---------- Free-text handlers (lead capture + questions) ----------
+
+@router.message(Form.partner_name)
+async def h_partner_name(message: Message, state: FSMContext):
+    await state.update_data(partner_name=(message.text or "").strip())
+    await state.set_state(Form.partner_contact)
+    await ask_next(message, message.from_user.id, Form.partner_contact)
+
+@router.message(Form.partner_contact)
+async def h_partner_contact(message: Message, state: FSMContext):
+    await state.update_data(partner_contact=(message.text or "").strip())
+    await state.set_state(Form.company)
+    await ask_next(message, message.from_user.id, Form.company)
 
 @router.message(Form.company)
-async def ask_company(message: Message, state: FSMContext):
+async def h_company(message: Message, state: FSMContext):
     await state.update_data(company=(message.text or "").strip())
     await state.set_state(Form.q1)
     await ask_next(message, message.from_user.id, Form.q1)
 
-# ---------- Answer via buttons (q1, q2, q5) + nav ----------
+# --- answers via buttons for q1/q2/q5 + navigation ---
 
 def parse_answer(data: str) -> Tuple[str, Optional[str]]:
     if ":" not in data:
@@ -512,30 +471,18 @@ def parse_answer(data: str) -> Tuple[str, Optional[str]]:
         return parts[0], parts[1]
     return data, None
 
-@router.callback_query(F.data.startswith(("ans:", "nav:", "post:")))
+@router.callback_query(F.data.startswith(("ans:", "nav:")))
 async def cb_answers(call: CallbackQuery, state: FSMContext):
-    uid = call.from_user.id
     try:
         await call.answer()
     except Exception:
         pass
-
-    data_key, val = parse_answer(call.data)
-
-    # post actions (contacts / comment)
-    if data_key == "post":
-        if val == "contact":
-            await state.set_state(Form.contact_name)
-            await call.message.answer(t(uid, "ask_contact_name"))
-        elif val == "comment":
-            await state.set_state(Form.free_comment)
-            await call.message.answer(t(uid, "ask_free_comment"))
-        return
-
+    uid = call.from_user.id
     cur_state = await state.get_state()
 
-    # navigation
-    if data_key == "nav":
+    key, val = parse_answer(call.data)
+
+    if key == "nav":
         if val == "back":
             if cur_state is None:
                 return
@@ -545,6 +492,8 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
                 await ask_next(call.message, uid, prev)
         elif val == "skip":
             next_map = {
+                Form.partner_name.state: Form.partner_contact,
+                Form.partner_contact.state: Form.company,
                 Form.company.state: Form.q1,
                 Form.q1.state: Form.q2,
                 Form.q2.state: Form.q3,
@@ -557,8 +506,7 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
                 await ask_next(call.message, uid, nxt)
         return
 
-    # answers
-    if data_key == "q1":
+    if key == "q1":
         mapping = {"opt1": TXT[get_lang(uid)]["q1_opt1"],
                    "opt2": TXT[get_lang(uid)]["q1_opt2"],
                    "opt3": TXT[get_lang(uid)]["q1_opt3"]}
@@ -566,33 +514,36 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
         await state.set_state(Form.q2)
         await ask_next(call.message, uid, Form.q2)
 
-    elif data_key == "q2":
+    elif key == "q2":
         await state.update_data(q2=val)
         await state.set_state(Form.q3)
         await ask_next(call.message, uid, Form.q3)
 
-    elif data_key == "q5":
+    elif key == "q5":
         await state.update_data(q5=val)
         data = await state.get_data()
         ok = await append_feedback_row(call.from_user, data)
         await state.clear()
         if ok:
             await call.message.answer(t(uid, "thanks"))
-            await call.message.answer(t(uid, "after_thanks"), reply_markup=kb_after_survey(uid))
         else:
             await send_text_safe(call.message, uid, "err")
-        if ok:
+        if ok and ADMINS:
             for admin_id in ADMINS:
                 try:
                     uname = f"@{call.from_user.username}" if call.from_user.username else str(call.from_user.id)
                     await call.bot.send_message(
                         admin_id,
-                        f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
+                        f"✅ Новый фидбэк: {uname}\n"
+                        f"Имя: {data.get('partner_name','')}\n"
+                        f"Контакт: {data.get('partner_contact','')}\n"
+                        f"Компания: {data.get('company','')}\n"
+                        f"NPS: {data.get('q5','')}"
                     )
                 except Exception:
                     pass
 
-# ---------- Free-text handlers for each state ----------
+# --- free text fallbacks for q1..q5 ---
 
 @router.message(Form.q1)
 async def q1_text(message: Message, state: FSMContext):
@@ -603,8 +554,7 @@ async def q1_text(message: Message, state: FSMContext):
 @router.message(Form.q2)
 async def q2_text(message: Message, state: FSMContext):
     text = (message.text or "").strip()
-    value = text
-    await state.update_data(q2=value)
+    await state.update_data(q2=text)
     await state.set_state(Form.q3)
     await ask_next(message, message.from_user.id, Form.q3)
 
@@ -622,8 +572,7 @@ async def q4_text(message: Message, state: FSMContext):
 
 @router.message(Form.q5)
 async def q5_text(message: Message, state: FSMContext):
-    text = (message.text or "").strip()
-    await state.update_data(q5=text)
+    await state.update_data(q5=(message.text or "").strip())
     data = await state.get_data()
     ok = False
     try:
@@ -632,99 +581,37 @@ async def q5_text(message: Message, state: FSMContext):
         log.exception("append_feedback_row raised: %s", e)
 
     await state.clear()
-
     if ok:
         await message.answer(t(message.from_user.id, "thanks"))
-        await message.answer(t(message.from_user.id, "after_thanks"), reply_markup=kb_after_survey(message.from_user.id))
-        for admin_id in ADMINS:
-            try:
-                uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-                await message.bot.send_message(
-                    admin_id,
-                    f"✅ Новый фидбэк: {uname}\nКомпания: {data.get('company','')}\nNPS: {data.get('q5','')}"
-                )
-            except Exception:
-                pass
+        if ADMINS:
+            for admin_id in ADMINS:
+                try:
+                    uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
+                    await message.bot.send_message(
+                        admin_id,
+                        f"✅ Новый фидбэк: {uname}\n"
+                        f"Имя: {data.get('partner_name','')}\n"
+                        f"Контакт: {data.get('partner_contact','')}\n"
+                        f"Компания: {data.get('company','')}\n"
+                        f"NPS: {data.get('q5','')}"
+                    )
+                except Exception:
+                    pass
     else:
         await send_text_safe(message, message.from_user.id, "err")
-        for admin_id in ADMINS:
-            try:
-                await message.bot.send_message(
-                    admin_id,
-                    "⚠️ Не удалось записать ответ в Google Sheets после 3 попыток.\n"
-                    f"User: {message.from_user.id} @{message.from_user.username or '—'}\n"
-                    f"Company: {data.get('company','')}\n"
-                    f"Payload: {json.dumps(data, ensure_ascii=False)[:1000]}"
-                )
-            except Exception:
-                pass
 
-# ---------- Post-survey: contacts + comment ----------
-
-@router.message(Form.contact_name)
-async def post_contact_name(message: Message, state: FSMContext):
-    await state.update_data(contact_name=(message.text or "").strip())
-    await state.set_state(Form.contact_phone)
-    await message.answer(t(message.from_user.id, "ask_contact_phone"))
-
-@router.message(Form.contact_phone)
-async def post_contact_phone(message: Message, state: FSMContext):
-    txt = (message.text or "").strip()
-    phone = txt if txt.startswith("+") or txt.replace(" ", "").isdigit() else ""
-    tg = txt if txt.startswith("@") else ""
-    await state.update_data(contact_phone=phone, contact_tg=tg)
-    await state.set_state(Form.contact_email)
-    await message.answer(t(message.from_user.id, "ask_contact_email"))
-
-@router.message(Form.contact_email)
-async def post_contact_email(message: Message, state: FSMContext):
-    email = (message.text or "").strip()
-    if email == "-":
-        email = ""
-    await state.update_data(contact_email=email)
-    data = await state.get_data()
-    await upsert_contacts_for_user(message.from_user, data)
-    await state.clear()
-    await message.answer(t(message.from_user.id, "contacts_saved"))
-
-    # notify admins
-    uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-    text = (
-        f"📇 Контакты от {uname}\n"
-        f"Имя: {data.get('contact_name','')}\n"
-        f"Тел: {data.get('contact_phone','')}\n"
-        f"TG:  {data.get('contact_tg','')}\n"
-        f"Email: {data.get('contact_email','')}"
-    )
-    for admin_id in ADMINS:
-        try:
-            await message.bot.send_message(admin_id, text)
-        except Exception:
-            pass
-
-@router.message(Form.free_comment)
-async def post_comment_text(message: Message, state: FSMContext):
-    await state.update_data(free_comment=(message.text or "").strip())
-    data = await state.get_data()
-    await upsert_comment_for_user(message.from_user, data)
-    await state.clear()
-    await message.answer(t(message.from_user.id, "comment_saved"))
-
-    uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-    msg = f"💬 Комментарий от {uname}:\n{data.get('free_comment','')}"
-    for admin_id in ADMINS:
-        try:
-            await message.bot.send_message(admin_id, msg[:4000])
-        except Exception:
-            pass
-
-# ---------- Optional: /diag — проверка записи в шит ----------
+# ---------- Optional: /diag и /stats ----------
 
 @router.message(Command("diag"))
 async def cmd_diag(message: Message):
     ok = await append_feedback_row(
         message.from_user,
-        {"company": "diag", "q1": "diag", "q2": "1", "q3": "diag", "q4": "diag", "q5": "1"},
+        {
+            "partner_name": "diag user",
+            "partner_contact": "+1000000",
+            "company": "diag inc",
+            "q1": "diag", "q2": "1", "q3": "diag", "q4": "diag", "q5": "1",
+        },
     )
     await message.answer(t(message.from_user.id, "diag_ok") if ok else t(message.from_user.id, "diag_fail"))
 
@@ -738,8 +625,7 @@ async def cmd_stats(message: Message):
 
     q1_vals = [r.get("q1_time_to_setup", "").strip() for r in rows if r.get("q1_time_to_setup", "").strip()]
     dist = Counter(q1_vals)
-    dist_lines = [f"• {k} — {v}" for k, v in dist.most_common()]
-    dist_text = "\n".join(dist_lines) if dist_lines else "—"
+    dist_text = "\n".join([f"• {k} — {v}" for k, v in dist.most_common()]) or "—"
 
     def _nums(field):
         res = []
@@ -780,26 +666,7 @@ async def cmd_stats(message: Message):
         t(uid, "stats_avg").format(avg_q2=avg_q2, avg_q5=avg_q5),
         t(uid, "stats_top_keywords").format(words=html_escape(words_text)),
     ]
-    await message.answer("\n\n".join(parts))
-
-# ---------- Inbox fallback: любые сообщения вне анкеты ----------
-
-@router.message()
-async def fallback_inbox(message: Message, state: FSMContext):
-    # Если внутри опроса — отдать на обработку соответствующим хендлерам
-    if await state.get_state() is not None:
-        return
-    await message.answer(t(message.from_user.id, "inbox_echo"))
-    uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-    text = (message.text or message.caption or "").strip()
-    for admin_id in ADMINS:
-        try:
-            await message.bot.send_message(
-                admin_id,
-                f"✉️ Сообщение от {uname} (id {message.from_user.id}):\n{text[:4000]}"
-            )
-        except Exception:
-            pass
+    await message.answer("\n\n".join(parts), parse_mode="HTML")
 
 # --------------- FastAPI + Aiogram Webhook ---------------
 
