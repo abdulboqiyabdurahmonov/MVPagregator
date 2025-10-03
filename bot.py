@@ -335,18 +335,15 @@ def start_keyboard(user_id: Optional[int]) -> InlineKeyboardMarkup:
 
 async def ask_next(message: Message, user_id: int, next_state: State):
     if next_state is Form.q1:
-        await send_text_safe(message, user_id, "q1")
-        await message.answer(".", reply_markup=kb_q1(user_id))
+        await send_text_safe(message, user_id, "q1", reply_markup=kb_q1(user_id))
     elif next_state is Form.q2:
-        await send_text_safe(message, user_id, "q2")
-        await message.answer(".", reply_markup=kb_scale(user_id, "q2"))
+        await send_text_safe(message, user_id, "q2", reply_markup=kb_scale(user_id, "q2"))
     elif next_state is Form.q3:
         await send_text_safe(message, user_id, "q3")
     elif next_state is Form.q4:
         await send_text_safe(message, user_id, "q4")
     elif next_state is Form.q5:
-        await send_text_safe(message, user_id, "q5")
-        await message.answer(".", reply_markup=kb_scale(user_id, "q5"))
+        await send_text_safe(message, user_id, "q5", reply_markup=kb_scale(user_id, "q5"))
 
 def prev_state_of(state: State) -> Optional[State]:
     order = [Form.company, Form.q1, Form.q2, Form.q3, Form.q4, Form.q5]
@@ -464,6 +461,10 @@ def parse_answer(data: str) -> Tuple[str, Optional[str]]:
 
 @router.callback_query(F.data.startswith(("ans:", "nav:")))
 async def cb_answers(call: CallbackQuery, state: FSMContext):
+    try:
+        await call.answer()  # закрыть спиннер сразу
+    except Exception:
+        pass
     uid = call.from_user.id
     cur_state = await state.get_state()
 
