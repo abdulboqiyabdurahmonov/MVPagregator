@@ -224,12 +224,10 @@ async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         try:
             spread = await _io_to_sheets(_open_spreadsheet)
             ws = _get_or_create_ws(spread, "feedback", [
-                "timestamp",
-                "user_id", "username", "full_name_tg",
+                "timestamp", "user_id", "username", "full_name",
                 "partner_name", "partner_contact", "company",
                 "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
-                "q4_missing_features", "q5_nps_recommend",
-                "raw_json"
+                "q4_missing_features", "q5_nps_recommend", "raw_json"
             ])
             await _io_to_sheets(ws.append_row, row, value_input_option="USER_ENTERED")
             log.info("Sheets append OK (attempt %s)", attempt)
@@ -544,8 +542,8 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
                     await call.bot.send_message(
                         admin_id,
                         f"✅ Новый фидбэк: {uname}\n"
-                        f"Имя: {data.get('partner_name','')}\n"
-                        f"Контакт: {data.get('partner_contact','')}\n"
+                        f"Имя: {data.get('name','')}\n"
+                        f"Контакт: {data.get('contact','')}\n"
                         f"Компания: {data.get('company','')}\n"
                         f"NPS: {data.get('q5','')}"
                     )
@@ -617,8 +615,8 @@ async def q5_text(message: Message, state: FSMContext):
                     await message.bot.send_message(
                         admin_id,
                         f"✅ Новый фидбэк: {uname}\n"
-                        f"Имя: {data.get('partner_name','')}\n"
-                        f"Контакт: {data.get('partner_contact','')}\n"
+                        f"Имя: {data.get('name','')}\n"
+                        f"Контакт: {data.get('contact','')}\n"
                         f"Компания: {data.get('company','')}\n"
                         f"NPS: {data.get('q5','')}"
                     )
@@ -634,8 +632,8 @@ async def cmd_diag(message: Message):
     ok = await append_feedback_row(
         message.from_user,
         {
-            "partner_name": "diag user",
-            "partner_contact": "+1000000",
+            "name": "diag user",
+            "contact": "+1000000",
             "company": "diag inc",
             "q1": "diag", "q2": "1", "q3": "diag", "q4": "diag", "q5": "1",
         },
