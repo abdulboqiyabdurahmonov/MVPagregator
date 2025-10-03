@@ -705,12 +705,8 @@ async def on_shutdown():
     log.info("Webhook deleted")
 
 @app.post("/webhook")
-async def telegram_webhook(
-    request: Request,
-    x_telegram_bot_api_secret_token: Optional[str] = Header(None),
-):
-    if x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid secret")
+async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Optional[str] = Header(None)):
+    # СЕКРЕТ ОТКЛЮЧЕН: не проверяем заголовок, принимаем все апдейты
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return JSONResponse({"ok": True})
