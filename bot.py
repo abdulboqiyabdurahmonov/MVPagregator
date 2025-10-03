@@ -682,10 +682,11 @@ dp.include_router(router)
 
 @app.on_event("startup")
 async def on_startup():
-    kwargs = dict(
-        url=WEBHOOK_URL,
-        allowed_updates=["message", "callback_query"],
-    )
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        pass
+    kwargs = dict(url=WEBHOOK_URL, allowed_updates=["message","callback_query"])
     if WEBHOOK_SECRET:
         kwargs["secret_token"] = WEBHOOK_SECRET
     await bot.set_webhook(**kwargs)
