@@ -453,6 +453,7 @@ async def cb_start(call: CallbackQuery, state: FSMContext):
     await send_text_safe(call.message, uid, "form_started")
     await ask_next(call.message, uid, Form.name)
 
+
 # ---------- Free-text handlers (lead capture + questions) ----------
 
 @router.message(Form.name)
