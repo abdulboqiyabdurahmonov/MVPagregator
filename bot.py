@@ -506,8 +506,8 @@ async def cb_answers(call: CallbackQuery, state: FSMContext):
                 await ask_next(call.message, uid, prev)
         elif val == "skip":
             next_map = {
-                Form.partner_name.state: Form.partner_contact,
-                Form.partner_contact.state: Form.company,
+                Form.name.state: Form.contact,
+                Form.contact.state: Form.company,
                 Form.company.state: Form.q1,
                 Form.q1.state: Form.q2,
                 Form.q2.state: Form.q3,
