@@ -696,24 +696,31 @@ dp.include_router(router)
 
 @app.on_event("startup")
 async def on_startup():
-    await bot.set_webhook(
+    kwargs = dict(
         url=WEBHOOK_URL,
-        allowed_updates=["message", "callback_query"]
+        allowed_updates=["message", "callback_query"],
     )
-    log.info("Webhook set: %s", WEBHOOK_URL)
-
+    if WEBHOOK_SECRET:  # секрет задан? используем. нет? не трогаем
+        kwargs["secret_token"] = WEBHOOK_SECRET
+    await bot.set_webhook(**kwargs)
+    log.info("Webhook set: %s (secret=%s)", WEBHOOK_URL, bool(WEBHOOK_SECRET))
+    
 @app.on_event("shutdown")
 async def on_shutdown():
     await bot.delete_webhook()
     log.info("Webhook deleted")
 
 @app.post("/webhook")
-async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Optional[str] = Header(None)):
-    # СЕКРЕТ ОТКЛЮЧЕН: не проверяем заголовок, принимаем все апдейты
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(None),
+):
+    if WEBHOOK_SECRET and x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret")
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return JSONResponse({"ok": True})
-
+    
 @app.get("/")
 async def root():
     return PlainTextResponse("TripleA Feedback Bot: alive")
