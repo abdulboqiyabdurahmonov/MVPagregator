@@ -719,6 +719,10 @@ async def telegram_webhook(
 async def root():
     return PlainTextResponse("TripleA Feedback Bot: alive")
 
+@app.head("/")
+async def root_head():
+    return PlainTextResponse("", status_code=200)
+
 @app.get("/healthz")
 async def healthz():
     return JSONResponse({
