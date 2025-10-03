@@ -220,6 +220,17 @@ async def append_feedback_row(user: User, data: Dict[str, Any]) -> bool:
         await asyncio.sleep(0.7 * attempt)
     return False
 
+async def fetch_feedback_records() -> list[dict]:
+    """Возвращает список словарей по листу 'feedback' (может быть пустым)."""
+    spread = await _io_to_sheets(_open_spreadsheet)
+    ws = _get_or_create_ws(spread, "feedback", [
+        "timestamp", "user_id", "username", "full_name", "company",
+        "q1_time_to_setup", "q2_statuses_score", "q3_what_inconvenient",
+        "q4_missing_features", "q5_nps_recommend", "raw_json"
+    ])
+    # get_all_records медленный — но безопасный; запускаем вне евент-лупа
+    return await _io_to_sheets(ws.get_all_records, head=1, default_blank="")
+
 # ----------- Persistent language store ------------
 
 _lang_cache: Dict[int, str] = {}
@@ -623,6 +634,66 @@ async def cmd_diag(message: Message):
         {"company": "diag", "q1": "diag", "q2": "1", "q3": "diag", "q4": "diag", "q5": "1"},
     )
     await message.answer(t(message.from_user.id, "diag_ok") if ok else t(message.from_user.id, "diag_fail"))
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    uid = message.from_user.id
+    rows = await fetch_feedback_records()
+    if not rows:
+        await message.answer(t(uid, "no_data"))
+        return
+
+    # распределение Q1
+    q1_vals = [r.get("q1_time_to_setup", "").strip() for r in rows if r.get("q1_time_to_setup", "").strip()]
+    dist = Counter(q1_vals)
+    dist_lines = [f"• {k} — {v}" for k, v in dist.most_common()]
+    dist_text = "\n".join(dist_lines) if dist_lines else "—"
+
+    # средние по Q2 и Q5 (берём только числа 1..10)
+    def _nums(field):
+        res = []
+        for r in rows:
+            s = str(r.get(field, "")).strip().replace(",", ".")
+            try:
+                v = float(s)
+                if 1 <= v <= 10:
+                    res.append(v)
+            except Exception:
+                pass
+        return res
+
+    q2_nums = _nums("q2_statuses_score")
+    q5_nums = _nums("q5_nps_recommend")
+    avg_q2 = f"{(sum(q2_nums)/len(q2_nums)):.2f}" if q2_nums else "—"
+    avg_q5 = f"{(sum(q5_nums)/len(q5_nums)):.2f}" if q5_nums else "—"
+
+    # топ слов из Q3 и Q4 (очистка и простые стоп-слова)
+    free_texts = []
+    for r in rows:
+        free_texts += [str(r.get("q3_what_inconvenient", "")), str(r.get("q4_missing_features", ""))]
+    text = " ".join(free_texts).lower()
+
+    # простые стоп-листы (ru/uz + общие)
+    stop = {
+        "и","в","на","что","как","или","за","до","после","для","это","его","ее","мы","но","же","из","у","по","от","не",
+        "сиз","ва","билан","бир","эмас","учун","ҳам","лекин","бўлди","ки","қилса","қандай",
+        "the","a","an","to","of","in","on","is","are","be"
+    }
+    # токенизация по небуквенным
+    words = re.split(r"[^\w’ʼʼʼ'-]+", text, flags=re.UNICODE)
+    words = [w for w in words if len(w) > 2 and w not in stop]
+    top = Counter(words).most_common(10)
+    words_text = "\n".join([f"• {w} — {c}" for w, c in top]) if top else "—"
+
+    # ответ
+    parts = [
+        f"📊 <b>{t(uid, 'stats_title')}</b>",
+        t(uid, "stats_n").format(n=len(rows)),
+        t(uid, "stats_q1_dist").format(dist=html_escape(dist_text)),
+        t(uid, "stats_avg").format(avg_q2=avg_q2, avg_q5=avg_q5),
+        t(uid, "stats_top_keywords").format(words=html_escape(words_text)),
+    ]
+    await message.answer("\n\n".join(parts))
 
 # --------------- FastAPI + Aiogram Webhook ---------------
 
